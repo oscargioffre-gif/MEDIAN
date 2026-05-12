@@ -1,12 +1,19 @@
 """
 Smart DCA Directa — Simulatore di Dollar Cost Averaging ottimizzato
-per il broker Directa (commissione fissa 1.5€).
+per il broker Directa.
+
+Commissione Directa (regime "Start"):
+  - 1.90€ per ogni 1000€ di controvalore (proporzionale 0.19%)
+  - Minimo 1.50€ se la proporzionale risulta inferiore
+  - Esempio: tranche 2000€ → 3.80€; tranche 500€ → 1.50€ (min)
 
 Logica:
-- Filtro efficienza: ogni tranche deve avere commissione ≤ 0.20% del valore
-- Pesi crescenti (20/30/50 per 5k, 10/20/30/40 per 10k)
-- Stress test su crollo consecutivo
+- Filtro efficienza: incidenza commissionale ≤ 0.20% per tranche
+- Pesi crescenti (20/30/50 per 3 tranche, 10/20/30/40 per 4 tranche)
+- Stress test su crollo consecutivo configurabile
 - Buy Zone su -1σ / -2σ / -3σ dal prezzo iniziale
+- Export PNG della simulazione
+- Archivio storico delle simulazioni salvate
 
 Author: Os — built with Claude
 """
@@ -14,201 +21,329 @@ Author: Os — built with Claude
 import streamlit as st
 import numpy as np
 import plotly.graph_objects as go
-from plotly.subplots import make_subplots
+import json
+from datetime import datetime
 
 # ============================================================
 # CONFIG
 # ============================================================
-COMMISSIONE_DIRECTA = 1.50  # €
-SOGLIA_EFFICIENZA = 0.0020  # 0.20% max incidenza commissionale per tranche
-COLORE_PROFITTO = "#50C878"   # verde smeraldo
-COLORE_RISCHIO = "#FF6B6B"    # rosso corallo
-COLORE_NEUTRO = "#94A3B8"     # grigio-blu
-COLORE_ACCENT = "#38BDF8"     # azzurro accent
-COLORE_BG = "#0A0E1A"
-COLORE_CARD = "#131826"
-COLORE_CARD_BORDER = "#1F2937"
+COMMISSIONE_PROPORZIONALE = 0.0019   # 1.90€ per 1000€ = 0.19%
+COMMISSIONE_MIN = 1.50               # € minimo
+SOGLIA_EFFICIENZA = 0.0020           # 0.20% max incidenza commissionale
 
-PESI_5K = [0.20, 0.30, 0.50]
-PESI_10K = [0.10, 0.20, 0.30, 0.40]
+# Palette ultra-luminosa, alto contrasto
+COL_BG = "#000000"
+COL_CARD = "#0F1419"
+COL_CARD_HI = "#1A2230"
+COL_BORDER = "#2A3441"
+COL_PROFIT = "#00FF94"       # verde neon
+COL_RISK = "#FF4757"         # rosso corallo brillante
+COL_ACCENT = "#00D4FF"       # ciano elettrico
+COL_WARN = "#FFB800"         # giallo ambra
+COL_TEXT = "#FFFFFF"         # bianco puro
+COL_TEXT_DIM = "#B8C5D6"     # grigio chiaro luminoso
+COL_TEXT_LABEL = "#7FD3FF"   # ciano chiaro per label
+
+PESI_3 = [0.20, 0.30, 0.50]
+PESI_4 = [0.10, 0.20, 0.30, 0.40]
 
 st.set_page_config(
     page_title="Smart DCA Directa",
     page_icon="📊",
     layout="centered",
-    initial_sidebar_state="expanded",
+    initial_sidebar_state="collapsed",
 )
 
+
 # ============================================================
-# CSS — Dark mode premium banking aesthetic
+# CSS — Ultra-luminoso, font grandi, mobile-first
 # ============================================================
 st.markdown(f"""
 <style>
-@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600;700&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&family=JetBrains+Mono:wght@500;600;700;800&display=swap');
+
+* {{
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+}}
 
 html, body, [class*="css"] {{
     font-family: 'Inter', -apple-system, sans-serif;
-    background-color: {COLORE_BG};
+    background-color: {COL_BG};
+    color: {COL_TEXT};
 }}
 
 .stApp {{
-    background: linear-gradient(180deg, {COLORE_BG} 0%, #060912 100%);
+    background: radial-gradient(ellipse at top, #0A1628 0%, {COL_BG} 60%);
 }}
 
-/* Sidebar */
 section[data-testid="stSidebar"] {{
-    background-color: {COLORE_CARD};
-    border-right: 1px solid {COLORE_CARD_BORDER};
+    background-color: {COL_CARD};
+    border-right: 1px solid {COL_BORDER};
+}}
+section[data-testid="stSidebar"] * {{
+    color: {COL_TEXT} !important;
 }}
 
-/* Header titolo */
 .main-title {{
     font-family: 'Inter', sans-serif;
-    font-weight: 800;
-    font-size: 1.9rem;
-    background: linear-gradient(135deg, {COLORE_PROFITTO} 0%, {COLORE_ACCENT} 100%);
+    font-weight: 900;
+    font-size: 2.4rem;
+    line-height: 1;
+    background: linear-gradient(135deg, {COL_PROFIT} 0%, {COL_ACCENT} 100%);
     -webkit-background-clip: text;
     -webkit-text-fill-color: transparent;
-    letter-spacing: -0.5px;
-    margin-bottom: 0.2rem;
+    letter-spacing: -1.5px;
+    margin-bottom: 0.3rem;
+    text-shadow: 0 0 40px rgba(0, 255, 148, 0.3);
 }}
 .main-sub {{
     font-family: 'JetBrains Mono', monospace;
-    font-size: 0.75rem;
-    color: {COLORE_NEUTRO};
-    letter-spacing: 1px;
+    font-size: 0.78rem;
+    color: {COL_TEXT_LABEL};
+    letter-spacing: 1.5px;
     text-transform: uppercase;
+    font-weight: 600;
     margin-bottom: 1.5rem;
 }}
 
-/* Card metriche */
 .metric-card {{
-    background: {COLORE_CARD};
-    border: 1px solid {COLORE_CARD_BORDER};
-    border-radius: 14px;
-    padding: 1rem 1.1rem;
-    margin-bottom: 0.7rem;
-    transition: border-color 0.2s;
+    background: linear-gradient(135deg, {COL_CARD} 0%, {COL_CARD_HI} 100%);
+    border: 1.5px solid {COL_BORDER};
+    border-radius: 18px;
+    padding: 1.2rem 1.3rem;
+    margin-bottom: 0.8rem;
+    transition: all 0.25s ease;
+    position: relative;
+    overflow: hidden;
+}}
+.metric-card::before {{
+    content: '';
+    position: absolute;
+    top: 0; left: 0; right: 0;
+    height: 2px;
+    background: linear-gradient(90deg, transparent, {COL_ACCENT}, transparent);
+    opacity: 0.6;
 }}
 .metric-card:hover {{
-    border-color: {COLORE_ACCENT};
+    border-color: {COL_ACCENT};
+    transform: translateY(-2px);
+    box-shadow: 0 8px 24px rgba(0, 212, 255, 0.15);
 }}
 .metric-label {{
     font-family: 'JetBrains Mono', monospace;
-    font-size: 0.65rem;
-    color: {COLORE_NEUTRO};
-    letter-spacing: 1.2px;
+    font-size: 0.72rem;
+    color: {COL_TEXT_LABEL};
+    letter-spacing: 1.5px;
     text-transform: uppercase;
-    margin-bottom: 0.4rem;
+    font-weight: 700;
+    margin-bottom: 0.5rem;
 }}
 .metric-value {{
     font-family: 'JetBrains Mono', monospace;
-    font-weight: 700;
-    font-size: 1.4rem;
-    line-height: 1.1;
+    font-weight: 800;
+    font-size: 1.9rem;
+    line-height: 1.05;
+    color: {COL_TEXT};
+    letter-spacing: -0.5px;
 }}
 .metric-delta {{
     font-family: 'JetBrains Mono', monospace;
-    font-size: 0.75rem;
-    margin-top: 0.3rem;
+    font-size: 0.85rem;
+    font-weight: 600;
+    margin-top: 0.5rem;
+    letter-spacing: 0.3px;
 }}
-.profit {{ color: {COLORE_PROFITTO}; }}
-.risk   {{ color: {COLORE_RISCHIO}; }}
-.neutral{{ color: {COLORE_NEUTRO}; }}
-.accent {{ color: {COLORE_ACCENT}; }}
+.profit  {{ color: {COL_PROFIT}; text-shadow: 0 0 12px rgba(0, 255, 148, 0.4); }}
+.risk    {{ color: {COL_RISK};   text-shadow: 0 0 12px rgba(255, 71, 87, 0.4); }}
+.warn    {{ color: {COL_WARN};   text-shadow: 0 0 12px rgba(255, 184, 0, 0.4); }}
+.neutral {{ color: {COL_TEXT_DIM}; }}
+.accent  {{ color: {COL_ACCENT}; text-shadow: 0 0 12px rgba(0, 212, 255, 0.4); }}
 
-/* Tranche box */
 .tranche-box {{
-    background: {COLORE_CARD};
-    border-left: 3px solid {COLORE_ACCENT};
-    border-radius: 8px;
-    padding: 0.8rem 1rem;
-    margin: 0.4rem 0;
+    background: linear-gradient(135deg, {COL_CARD} 0%, {COL_CARD_HI} 100%);
+    border-left: 4px solid {COL_ACCENT};
+    border-radius: 12px;
+    padding: 1rem 1.2rem;
+    margin: 0.5rem 0;
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 0.95rem;
+    color: {COL_TEXT};
+    font-weight: 500;
+}}
+.tranche-box.t1 {{ border-left-color: #7FD3FF; }}
+.tranche-box.t2 {{ border-left-color: {COL_ACCENT}; }}
+.tranche-box.t3 {{ border-left-color: {COL_PROFIT}; }}
+.tranche-box.t4 {{ border-left-color: {COL_WARN}; }}
+.tranche-box.blocked {{ border-left-color: {COL_RISK}; opacity: 0.85; }}
+.tranche-head {{
+    font-weight: 800;
+    font-size: 1rem;
+    letter-spacing: 0.5px;
+}}
+.tranche-info {{
+    color: {COL_TEXT_DIM};
+    font-size: 0.82rem;
+    margin-top: 0.4rem;
+    font-weight: 500;
+}}
+
+.section-title {{
+    font-family: 'Inter', sans-serif;
+    font-weight: 800;
+    font-size: 1.25rem;
+    color: {COL_TEXT};
+    margin-top: 1.8rem;
+    margin-bottom: 0.9rem;
+    padding-bottom: 0.5rem;
+    border-bottom: 2px solid {COL_BORDER};
+    letter-spacing: -0.3px;
+}}
+
+.stSlider label, .stRadio label, .stSelectbox label,
+.stNumberInput label, .stTextInput label {{
+    font-family: 'JetBrains Mono', monospace !important;
+    font-size: 0.78rem !important;
+    text-transform: uppercase;
+    letter-spacing: 1.2px;
+    color: {COL_TEXT_LABEL} !important;
+    font-weight: 700 !important;
+}}
+.stSlider div[data-baseweb="slider"] > div > div > div {{
+    background-color: {COL_ACCENT} !important;
+}}
+.stNumberInput input, .stTextInput input {{
+    background-color: {COL_CARD} !important;
+    color: {COL_TEXT} !important;
+    border: 1.5px solid {COL_BORDER} !important;
+    font-family: 'JetBrains Mono', monospace !important;
+    font-size: 1.05rem !important;
+    font-weight: 700 !important;
+}}
+.stButton > button {{
+    background: linear-gradient(135deg, {COL_ACCENT} 0%, {COL_PROFIT} 100%);
+    color: {COL_BG} !important;
+    border: none;
+    border-radius: 12px;
+    font-weight: 800;
+    font-family: 'Inter', sans-serif;
+    padding: 0.7rem 1.6rem;
+    font-size: 0.95rem;
+    letter-spacing: 0.3px;
+    transition: all 0.2s;
+    box-shadow: 0 4px 16px rgba(0, 212, 255, 0.25);
+}}
+.stButton > button:hover {{
+    transform: translateY(-1px);
+    box-shadow: 0 6px 20px rgba(0, 212, 255, 0.4);
+}}
+.stDownloadButton > button {{
+    background: linear-gradient(135deg, {COL_PROFIT} 0%, {COL_ACCENT} 100%);
+    color: {COL_BG} !important;
+    border: none;
+    border-radius: 12px;
+    font-weight: 800;
+    font-family: 'Inter', sans-serif;
+    padding: 0.7rem 1.6rem;
+}}
+
+[data-testid="stExpander"] summary {{
+    background-color: {COL_CARD} !important;
+    border-radius: 12px;
+    font-family: 'Inter', sans-serif !important;
+    font-weight: 700 !important;
+    font-size: 1rem !important;
+    color: {COL_TEXT} !important;
+}}
+[data-testid="stExpander"] {{
+    border: 1.5px solid {COL_BORDER};
+    border-radius: 12px;
+    margin-bottom: 0.6rem;
+}}
+[data-testid="stExpander"] p, [data-testid="stExpander"] li {{
+    color: {COL_TEXT} !important;
+    font-size: 0.95rem !important;
+    line-height: 1.6 !important;
+}}
+
+.archive-item {{
+    background: linear-gradient(135deg, {COL_CARD} 0%, {COL_CARD_HI} 100%);
+    border: 1.5px solid {COL_BORDER};
+    border-radius: 12px;
+    padding: 0.9rem 1.1rem;
+    margin-bottom: 0.5rem;
     font-family: 'JetBrains Mono', monospace;
     font-size: 0.85rem;
 }}
-.tranche-box.t1 {{ border-left-color: #94A3B8; }}
-.tranche-box.t2 {{ border-left-color: #38BDF8; }}
-.tranche-box.t3 {{ border-left-color: #50C878; }}
-.tranche-box.t4 {{ border-left-color: #F59E0B; }}
-.tranche-box.blocked {{ border-left-color: {COLORE_RISCHIO}; opacity: 0.7; }}
 
-/* Sezione titoli */
-.section-title {{
-    font-family: 'Inter', sans-serif;
-    font-weight: 700;
-    font-size: 1.05rem;
-    color: #E2E8F0;
-    margin-top: 1.5rem;
-    margin-bottom: 0.7rem;
-    padding-bottom: 0.4rem;
-    border-bottom: 1px solid {COLORE_CARD_BORDER};
+[data-testid="stCaptionContainer"], .stMarkdown p {{
+    color: {COL_TEXT_DIM} !important;
+    font-size: 0.92rem;
+    line-height: 1.6;
 }}
 
-/* Streamlit overrides */
-.stSlider > div > div > div > div {{
-    background-color: {COLORE_ACCENT};
-}}
-.stButton > button {{
-    background: linear-gradient(135deg, {COLORE_ACCENT} 0%, {COLORE_PROFITTO} 100%);
-    color: {COLORE_BG};
-    border: none;
-    border-radius: 10px;
-    font-weight: 700;
-    font-family: 'Inter', sans-serif;
-    padding: 0.6rem 1.5rem;
-}}
-.stRadio > label, .stSelectbox > label, .stNumberInput > label, .stSlider > label {{
-    font-family: 'JetBrains Mono', monospace;
-    font-size: 0.7rem;
-    text-transform: uppercase;
-    letter-spacing: 1px;
-    color: {COLORE_NEUTRO};
-}}
-
-/* Expander */
-.streamlit-expanderHeader {{
-    background-color: {COLORE_CARD};
-    border-radius: 10px;
-    font-family: 'Inter', sans-serif;
-    font-weight: 600;
-}}
-
-/* Mobile responsive */
 @media (max-width: 640px) {{
-    .main-title {{ font-size: 1.5rem; }}
-    .metric-value {{ font-size: 1.2rem; }}
-    .block-container {{ padding-top: 1rem; padding-left: 0.8rem; padding-right: 0.8rem; }}
+    .main-title {{ font-size: 1.9rem; }}
+    .main-sub {{ font-size: 0.7rem; }}
+    .metric-value {{ font-size: 1.55rem; }}
+    .metric-label {{ font-size: 0.65rem; }}
+    .section-title {{ font-size: 1.1rem; }}
+    .tranche-box {{ font-size: 0.85rem; padding: 0.85rem 1rem; }}
+    .block-container {{
+        padding-top: 1rem !important;
+        padding-left: 0.7rem !important;
+        padding-right: 0.7rem !important;
+        padding-bottom: 2rem !important;
+    }}
+    .stButton > button, .stDownloadButton > button {{
+        width: 100%;
+        font-size: 1rem;
+        padding: 0.85rem 1rem;
+    }}
 }}
 
-footer, #MainMenu {{ visibility: hidden; }}
+footer, #MainMenu, [data-testid="stToolbar"] {{ visibility: hidden; }}
+
+::-webkit-scrollbar {{ width: 8px; }}
+::-webkit-scrollbar-track {{ background: {COL_BG}; }}
+::-webkit-scrollbar-thumb {{ background: {COL_BORDER}; border-radius: 4px; }}
+::-webkit-scrollbar-thumb:hover {{ background: {COL_ACCENT}; }}
 </style>
 """, unsafe_allow_html=True)
 
 
 # ============================================================
+# COMMISSIONE DIRECTA
+# ============================================================
+def commissione_directa(controvalore: float) -> float:
+    """
+    Directa: 1.90€ ogni 1000€ (0.19%), minimo 1.50€.
+    Sotto ~789.47€ scatta il minimo fisso.
+    """
+    if controvalore <= 0:
+        return 0.0
+    proporzionale = controvalore * COMMISSIONE_PROPORZIONALE
+    return max(proporzionale, COMMISSIONE_MIN)
+
+
+# ============================================================
 # CORE LOGIC
 # ============================================================
-
 def calcola_tranches(budget_totale: float, pesi: list, prezzo_corrente: float):
-    """
-    Calcola le tranche e applica il filtro di efficienza commissionale.
-    Ritorna lista di dict con: peso, capitale, valido, motivo_blocco.
-    """
     tranches = []
     for i, peso in enumerate(pesi):
         capitale = budget_totale * peso
-        # Capitale al netto della commissione disponibile per acquisto azioni
-        capitale_netto = capitale - COMMISSIONE_DIRECTA
-        incidenza = COMMISSIONE_DIRECTA / capitale if capitale > 0 else 1
+        comm = commissione_directa(capitale)
+        capitale_netto = capitale - comm
+        incidenza = comm / capitale if capitale > 0 else 1
         valido = incidenza <= SOGLIA_EFFICIENZA
         n_azioni = int(capitale_netto / prezzo_corrente) if prezzo_corrente > 0 else 0
-
         tranches.append({
             "num": i + 1,
             "peso": peso,
             "capitale_lordo": capitale,
             "capitale_netto": capitale_netto,
+            "commissione": comm,
             "incidenza_pct": incidenza * 100,
             "valido": valido,
             "n_azioni_iniziali": n_azioni,
@@ -217,19 +352,14 @@ def calcola_tranches(budget_totale: float, pesi: list, prezzo_corrente: float):
 
 
 def calcola_pmc(acquisti: list) -> dict:
-    """
-    Calcola Prezzo Medio di Carico, totale investito e azioni.
-    acquisti: lista di dict {prezzo, n_azioni, commissione}
-    """
     if not acquisti:
-        return {"pmc": 0, "azioni_totali": 0, "investito_totale": 0, "commissioni_totali": 0}
-
+        return {"pmc": 0, "azioni_totali": 0, "investito_totale": 0,
+                "commissioni_totali": 0, "costo_totale": 0}
     investito = sum(a["prezzo"] * a["n_azioni"] for a in acquisti)
     commissioni = sum(a["commissione"] for a in acquisti)
     azioni_totali = sum(a["n_azioni"] for a in acquisti)
     costo_totale = investito + commissioni
     pmc = costo_totale / azioni_totali if azioni_totali > 0 else 0
-
     return {
         "pmc": pmc,
         "azioni_totali": azioni_totali,
@@ -240,46 +370,40 @@ def calcola_pmc(acquisti: list) -> dict:
 
 
 def simula_stress_test(tranches_valide: list, prezzo_iniziale: float, crolli: list):
-    """
-    Esegue lo stress test: ad ogni step di crollo, esegue la tranche corrispondente.
-    crolli: lista di percentuali negative [-3, -5, -10]
-    Ritorna: prezzi_giornalieri, acquisti_eseguiti, pmc_progressivo
-    """
     prezzi = [prezzo_iniziale]
     acquisti = []
     pmc_history = []
 
-    # Day 0 — prima tranche al prezzo iniziale
     if len(tranches_valide) > 0:
         t = tranches_valide[0]
-        n_az = int((t["capitale_lordo"] - COMMISSIONE_DIRECTA) / prezzo_iniziale)
+        comm = commissione_directa(t["capitale_lordo"])
+        n_az = int((t["capitale_lordo"] - comm) / prezzo_iniziale)
         if n_az > 0:
             acquisti.append({
                 "giorno": 0,
                 "prezzo": prezzo_iniziale,
                 "n_azioni": n_az,
-                "commissione": COMMISSIONE_DIRECTA,
+                "commissione": comm,
                 "tranche_num": t["num"],
                 "capitale": t["capitale_lordo"],
             })
     pmc_history.append(calcola_pmc(acquisti))
 
-    # Day 1..N — applica crolli sequenziali e tranche successive
     prezzo_corrente = prezzo_iniziale
     for i, crollo_pct in enumerate(crolli):
         prezzo_corrente = prezzo_corrente * (1 + crollo_pct / 100)
         prezzi.append(prezzo_corrente)
 
-        # Esegui tranche i+1 (se esiste e valida)
         if (i + 1) < len(tranches_valide):
             t = tranches_valide[i + 1]
-            n_az = int((t["capitale_lordo"] - COMMISSIONE_DIRECTA) / prezzo_corrente)
+            comm = commissione_directa(t["capitale_lordo"])
+            n_az = int((t["capitale_lordo"] - comm) / prezzo_corrente)
             if n_az > 0:
                 acquisti.append({
                     "giorno": i + 1,
                     "prezzo": prezzo_corrente,
                     "n_azioni": n_az,
-                    "commissione": COMMISSIONE_DIRECTA,
+                    "commissione": comm,
                     "tranche_num": t["num"],
                     "capitale": t["capitale_lordo"],
                 })
@@ -294,11 +418,6 @@ def simula_stress_test(tranches_valide: list, prezzo_iniziale: float, crolli: li
 
 
 def calcola_buy_zones(prezzo_iniziale: float, sigma_pct: float):
-    """
-    Buy Zone basate su deviazioni standard.
-    sigma_pct = volatilità giornaliera attesa (%)
-    Ritorna: livelli -1σ, -2σ, -3σ in € e in %
-    """
     sigma = prezzo_iniziale * (sigma_pct / 100)
     return {
         "p1sigma": prezzo_iniziale - sigma,
@@ -311,16 +430,39 @@ def calcola_buy_zones(prezzo_iniziale: float, sigma_pct: float):
 
 
 # ============================================================
-# SIDEBAR — Parametri
+# ARCHIVIO
+# ============================================================
+if "archivio" not in st.session_state:
+    st.session_state.archivio = []
+
+
+# ============================================================
+# SIDEBAR
 # ============================================================
 with st.sidebar:
     st.markdown("### ⚙️ PARAMETRI")
 
-    budget = st.radio(
-        "Budget totale",
-        options=[5000, 10000],
-        format_func=lambda x: f"{x:,}€".replace(",", "."),
+    budget = st.slider(
+        "Budget totale (€)",
+        min_value=5000,
+        max_value=10000,
+        value=10000,
+        step=500,
+        format="%d€",
+    )
+
+    n_tranche_choice = st.radio(
+        "Numero tranche",
+        options=[3, 4],
+        index=1 if budget >= 7500 else 0,
         horizontal=True,
+        help="3 tranche per ingressi più rapidi, 4 per maggior smoothing del PMC",
+    )
+
+    ticker_label = st.text_input(
+        "Ticker / nome titolo",
+        value="",
+        placeholder="es. SRPT, MRNA, ENI.MI",
     )
 
     prezzo_iniziale = st.number_input(
@@ -333,60 +475,65 @@ with st.sidebar:
     )
 
     sigma_giornaliera = st.slider(
-        "Volatilità giornaliera σ (%)",
+        "Volatilità σ giornaliera (%)",
         min_value=1.0,
         max_value=10.0,
-        value=3.0,
+        value=4.0,
         step=0.5,
-        help="Deviazione standard giornaliera del titolo. Biotech small-cap: 4-7%. Blue chip: 1-2%.",
+        help="Biotech small-cap: 4-7% · Mid-cap: 2-3% · Blue chip: 1-2%",
     )
 
     st.markdown("---")
     st.markdown("### 📉 STRESS TEST")
-    st.caption("Scenario di crollo consecutivo (giorni)")
+    st.caption("Crollo consecutivo per giorno")
 
-    crollo_d1 = st.slider("Giorno 1", -20.0, 0.0, -3.0, 0.5, format="%.1f%%")
-    crollo_d2 = st.slider("Giorno 2", -20.0, 0.0, -5.0, 0.5, format="%.1f%%")
-    crollo_d3 = st.slider("Giorno 3", -20.0, 0.0, -10.0, 0.5, format="%.1f%%")
-
-    n_tranche = 3 if budget == 5000 else 4
-    if n_tranche == 4:
-        crollo_d4 = st.slider("Giorno 4", -20.0, 0.0, -7.0, 0.5, format="%.1f%%")
-        crolli = [crollo_d1, crollo_d2, crollo_d3, crollo_d4]
-    else:
-        crolli = [crollo_d1, crollo_d2, crollo_d3]
+    default_crolli = [-3.0, -5.0, -10.0, -7.0]
+    crolli_widgets = []
+    for i in range(n_tranche_choice - 1):
+        cr = st.slider(
+            f"Giorno {i+1}",
+            min_value=-20.0,
+            max_value=0.0,
+            value=default_crolli[i] if i < len(default_crolli) else -5.0,
+            step=0.5,
+            format="%.1f%%",
+            key=f"crollo_{i}",
+        )
+        crolli_widgets.append(cr)
+    crolli = crolli_widgets
 
 
 # ============================================================
-# MAIN — Header
+# HEADER
 # ============================================================
 st.markdown('<div class="main-title">Smart DCA Directa</div>', unsafe_allow_html=True)
+ticker_display = f" · {ticker_label.upper()}" if ticker_label else ""
 st.markdown(
-    f'<div class="main-sub">Budget {budget:,}€ · Commissione 1.50€ · Filtro 0.20%</div>'.replace(",", "."),
+    f'<div class="main-sub">Budget {budget:,}€ · {n_tranche_choice} tranche{ticker_display}</div>'.replace(",", "."),
     unsafe_allow_html=True,
 )
+
 
 # ============================================================
 # CALCOLI
 # ============================================================
-pesi = PESI_5K if budget == 5000 else PESI_10K
+pesi = PESI_3 if n_tranche_choice == 3 else PESI_4
 tranches_raw = calcola_tranches(budget, pesi, prezzo_iniziale)
 tranches_valide = [t for t in tranches_raw if t["valido"]]
 
-risultato = simula_stress_test(tranches_valide, prezzo_iniziale, crolli[:len(tranches_valide) - 1] if len(tranches_valide) > 1 else [])
+crolli_usati = crolli[:max(0, len(tranches_valide) - 1)]
+risultato = simula_stress_test(tranches_valide, prezzo_iniziale, crolli_usati)
 buy_zones = calcola_buy_zones(prezzo_iniziale, sigma_giornaliera)
 
 pmc_finale = risultato["pmc_history"][-1] if risultato["pmc_history"] else {}
 prezzo_finale = risultato["prezzo_finale"]
 pmc_value = pmc_finale.get("pmc", 0)
 
-# Break-even necessario (per tornare al PMC dal prezzo attuale)
 if prezzo_finale > 0 and pmc_value > 0:
     break_even_pct = ((pmc_value / prezzo_finale) - 1) * 100
 else:
     break_even_pct = 0
 
-# Perdita massima
 valore_attuale = pmc_finale.get("azioni_totali", 0) * prezzo_finale
 costo_totale = pmc_finale.get("costo_totale", 0)
 perdita_eur = valore_attuale - costo_totale
@@ -394,7 +541,7 @@ perdita_pct = (perdita_eur / costo_totale * 100) if costo_totale > 0 else 0
 
 
 # ============================================================
-# CARD METRICHE CHIAVE
+# DASHBOARD METRICHE
 # ============================================================
 st.markdown('<div class="section-title">📊 Dashboard</div>', unsafe_allow_html=True)
 
@@ -402,36 +549,37 @@ col1, col2 = st.columns(2)
 with col1:
     st.markdown(f"""
     <div class="metric-card">
-        <div class="metric-label">PMC Attuale</div>
+        <div class="metric-label">PMC ATTUALE</div>
         <div class="metric-value accent">€{pmc_value:.3f}</div>
         <div class="metric-delta neutral">{pmc_finale.get("azioni_totali", 0)} azioni</div>
     </div>
     """, unsafe_allow_html=True)
 
+    be_class = 'profit' if break_even_pct < 10 else ('warn' if break_even_pct < 20 else 'risk')
     st.markdown(f"""
     <div class="metric-card">
-        <div class="metric-label">Break-Even</div>
-        <div class="metric-value {'profit' if break_even_pct < 10 else 'risk'}">+{break_even_pct:.2f}%</div>
-        <div class="metric-delta neutral">da prezzo finale €{prezzo_finale:.3f}</div>
+        <div class="metric-label">BREAK-EVEN</div>
+        <div class="metric-value {be_class}">+{break_even_pct:.2f}%</div>
+        <div class="metric-delta neutral">da €{prezzo_finale:.3f}</div>
     </div>
     """, unsafe_allow_html=True)
 
 with col2:
     st.markdown(f"""
     <div class="metric-card">
-        <div class="metric-label">Investito</div>
+        <div class="metric-label">INVESTITO</div>
         <div class="metric-value">€{pmc_finale.get("costo_totale", 0):,.2f}</div>
-        <div class="metric-delta neutral">Comm: €{pmc_finale.get("commissioni_totali", 0):.2f}</div>
+        <div class="metric-delta neutral">Comm €{pmc_finale.get("commissioni_totali", 0):.2f}</div>
     </div>
     """.replace(",", "."), unsafe_allow_html=True)
 
+    pl_class = 'profit' if perdita_eur >= 0 else 'risk'
+    pl_sign = '+' if perdita_eur >= 0 else ''
     st.markdown(f"""
     <div class="metric-card">
-        <div class="metric-label">P/L Attuale</div>
-        <div class="metric-value {'profit' if perdita_eur >= 0 else 'risk'}">
-            {'+' if perdita_eur >= 0 else ''}€{perdita_eur:.2f}
-        </div>
-        <div class="metric-delta {'profit' if perdita_eur >= 0 else 'risk'}">{perdita_pct:+.2f}%</div>
+        <div class="metric-label">P/L ATTUALE</div>
+        <div class="metric-value {pl_class}">{pl_sign}€{perdita_eur:.2f}</div>
+        <div class="metric-delta {pl_class}">{perdita_pct:+.2f}%</div>
     </div>
     """, unsafe_allow_html=True)
 
@@ -444,129 +592,128 @@ st.markdown('<div class="section-title">🎯 Piano Tranche</div>', unsafe_allow_
 for t in tranches_raw:
     status_class = f"t{t['num']}" if t["valido"] else "blocked"
     status_icon = "✓" if t["valido"] else "✗"
-    status_color = COLORE_PROFITTO if t["valido"] else COLORE_RISCHIO
+    status_color = COL_PROFIT if t["valido"] else COL_RISK
 
     eseguito = next((a for a in risultato["acquisti"] if a["tranche_num"] == t["num"]), None)
 
     if eseguito:
-        prezzo_exec = f"€{eseguito['prezzo']:.3f}"
-        info_exec = f"@ {prezzo_exec} · giorno {eseguito['giorno']}"
+        info_exec = f"@ €{eseguito['prezzo']:.3f} · giorno {eseguito['giorno']}"
         n_az_str = f"{eseguito['n_azioni']} az."
     else:
         info_exec = "in attesa"
         n_az_str = f"~{t['n_azioni_iniziali']} az."
 
-    motivo = "" if t["valido"] else f"<br><span class='risk'>⚠ Incidenza {t['incidenza_pct']:.3f}% > soglia 0.20%</span>"
+    motivo = ""
+    if not t["valido"]:
+        motivo = f"<br><span class='risk' style='font-weight:700;'>⚠ Tranche troppo piccola — incidenza {t['incidenza_pct']:.3f}% > 0.20%</span>"
 
     st.markdown(f"""
     <div class="tranche-box {status_class}">
-        <span style="color:{status_color}; font-weight:700;">{status_icon} TRANCHE {t['num']}</span>
-        &nbsp;·&nbsp; <strong>{t['peso']*100:.0f}%</strong>
-        &nbsp;·&nbsp; €{t['capitale_lordo']:,.0f}
-        &nbsp;·&nbsp; {n_az_str}
-        <br><span class="neutral" style="font-size:0.75rem;">{info_exec} · commissione {t['incidenza_pct']:.3f}%</span>
+        <div class="tranche-head">
+            <span style="color:{status_color};">{status_icon} TRANCHE {t['num']}</span>
+            &nbsp;·&nbsp; {t['peso']*100:.0f}%
+            &nbsp;·&nbsp; €{t['capitale_lordo']:,.0f}
+            &nbsp;·&nbsp; {n_az_str}
+        </div>
+        <div class="tranche-info">
+            {info_exec} · commissione €{t['commissione']:.2f} ({t['incidenza_pct']:.3f}%)
+        </div>
         {motivo}
     </div>
     """.replace(",", "."), unsafe_allow_html=True)
 
 
 # ============================================================
-# GRAFICO PLOTLY — PMC vs Prezzo
+# GRAFICO
 # ============================================================
 st.markdown('<div class="section-title">📈 Stress Test Simulator</div>', unsafe_allow_html=True)
 
 giorni = list(range(len(risultato["prezzi"])))
 prezzi_serie = risultato["prezzi"]
-pmc_serie = [h.get("pmc", None) for h in risultato["pmc_history"]]
+pmc_serie = [h.get("pmc", None) if h.get("pmc", 0) > 0 else None for h in risultato["pmc_history"]]
 
-fig = go.Figure()
-
-# Linea prezzo di mercato
-fig.add_trace(go.Scatter(
-    x=giorni,
-    y=prezzi_serie,
-    mode="lines+markers",
-    name="Prezzo Mercato",
-    line=dict(color=COLORE_RISCHIO, width=3, shape="spline"),
-    marker=dict(size=10, line=dict(width=2, color=COLORE_BG)),
-    hovertemplate="<b>Giorno %{x}</b><br>Prezzo: €%{y:.3f}<extra></extra>",
-))
-
-# Linea PMC
-fig.add_trace(go.Scatter(
-    x=giorni,
-    y=pmc_serie,
-    mode="lines+markers",
-    name="PMC",
-    line=dict(color=COLORE_PROFITTO, width=3, dash="dot", shape="spline"),
-    marker=dict(size=10, symbol="diamond", line=dict(width=2, color=COLORE_BG)),
-    hovertemplate="<b>Giorno %{x}</b><br>PMC: €%{y:.3f}<extra></extra>",
-))
-
-# Buy Zones (linee orizzontali)
-for zone, label, color, alpha in [
-    (buy_zones["p1sigma"], "-1σ Buy Zone", COLORE_ACCENT, 0.5),
-    (buy_zones["p2sigma"], "-2σ Buy Zone", "#F59E0B", 0.5),
-    (buy_zones["p3sigma"], "-3σ Buy Zone", COLORE_RISCHIO, 0.6),
-]:
-    fig.add_hline(
-        y=zone,
-        line_dash="dash",
-        line_color=color,
-        opacity=alpha,
-        annotation_text=f"{label} · €{zone:.2f}",
-        annotation_position="right",
-        annotation_font=dict(family="JetBrains Mono", size=10, color=color),
-    )
-
-# Marker acquisti eseguiti
-for a in risultato["acquisti"]:
+def build_chart(for_export=False):
+    fig = go.Figure()
     fig.add_trace(go.Scatter(
-        x=[a["giorno"]],
-        y=[a["prezzo"]],
-        mode="markers+text",
-        marker=dict(size=18, color=COLORE_ACCENT, symbol="circle",
-                    line=dict(width=3, color=COLORE_BG)),
-        text=[f"T{a['tranche_num']}"],
-        textposition="top center",
-        textfont=dict(family="JetBrains Mono", size=11, color="white"),
-        showlegend=False,
-        hovertemplate=f"<b>Tranche {a['tranche_num']}</b><br>€{a['prezzo']:.3f}<br>{a['n_azioni']} azioni<extra></extra>",
+        x=giorni, y=prezzi_serie, mode="lines+markers",
+        name="Prezzo",
+        line=dict(color=COL_RISK, width=4, shape="spline"),
+        marker=dict(size=14, line=dict(width=3, color=COL_BG)),
+        hovertemplate="<b>Giorno %{x}</b><br>Prezzo: €%{y:.3f}<extra></extra>",
     ))
+    fig.add_trace(go.Scatter(
+        x=giorni, y=pmc_serie, mode="lines+markers",
+        name="PMC",
+        line=dict(color=COL_PROFIT, width=4, dash="dot", shape="spline"),
+        marker=dict(size=14, symbol="diamond", line=dict(width=3, color=COL_BG)),
+        hovertemplate="<b>Giorno %{x}</b><br>PMC: €%{y:.3f}<extra></extra>",
+    ))
+    for zone, label, color in [
+        (buy_zones["p1sigma"], "-1σ", COL_ACCENT),
+        (buy_zones["p2sigma"], "-2σ", COL_WARN),
+        (buy_zones["p3sigma"], "-3σ", COL_RISK),
+    ]:
+        fig.add_hline(
+            y=zone, line_dash="dash", line_color=color, line_width=2, opacity=0.6,
+            annotation_text=f"<b>{label}</b> €{zone:.2f}",
+            annotation_position="right",
+            annotation_font=dict(family="JetBrains Mono", size=12, color=color),
+        )
+    for a in risultato["acquisti"]:
+        fig.add_trace(go.Scatter(
+            x=[a["giorno"]], y=[a["prezzo"]], mode="markers+text",
+            marker=dict(size=24, color=COL_ACCENT, symbol="circle",
+                        line=dict(width=4, color=COL_BG)),
+            text=[f"<b>T{a['tranche_num']}</b>"],
+            textposition="top center",
+            textfont=dict(family="JetBrains Mono", size=14, color=COL_TEXT),
+            showlegend=False,
+            hovertemplate=f"<b>T{a['tranche_num']}</b><br>€{a['prezzo']:.3f}<br>{a['n_azioni']} az.<extra></extra>",
+        ))
 
-fig.update_layout(
-    template="plotly_dark",
-    paper_bgcolor=COLORE_BG,
-    plot_bgcolor=COLORE_CARD,
-    font=dict(family="JetBrains Mono", color="#E2E8F0", size=11),
-    height=440,
-    margin=dict(l=20, r=80, t=30, b=40),
-    xaxis=dict(
-        title="Giorno",
-        gridcolor=COLORE_CARD_BORDER,
-        zerolinecolor=COLORE_CARD_BORDER,
-        dtick=1,
-    ),
-    yaxis=dict(
-        title="Prezzo (€)",
-        gridcolor=COLORE_CARD_BORDER,
-        zerolinecolor=COLORE_CARD_BORDER,
-        tickformat=".2f",
-    ),
-    legend=dict(
-        orientation="h",
-        yanchor="bottom",
-        y=1.02,
-        xanchor="right",
-        x=1,
-        bgcolor=COLORE_CARD,
-        bordercolor=COLORE_CARD_BORDER,
-        borderwidth=1,
-    ),
-    hovermode="x unified",
-)
+    layout_kwargs = dict(
+        template="plotly_dark",
+        paper_bgcolor=COL_BG, plot_bgcolor=COL_CARD,
+        font=dict(family="JetBrains Mono", color=COL_TEXT, size=13),
+        xaxis=dict(
+            title=dict(text="<b>Giorno</b>", font=dict(size=13, color=COL_TEXT_LABEL)),
+            gridcolor=COL_BORDER, zerolinecolor=COL_BORDER, dtick=1,
+            tickfont=dict(size=12, color=COL_TEXT),
+        ),
+        yaxis=dict(
+            title=dict(text="<b>Prezzo (€)</b>", font=dict(size=13, color=COL_TEXT_LABEL)),
+            gridcolor=COL_BORDER, zerolinecolor=COL_BORDER, tickformat=".2f",
+            tickfont=dict(size=12, color=COL_TEXT),
+        ),
+        legend=dict(
+            orientation="h", yanchor="bottom", y=1.02,
+            xanchor="right", x=1,
+            bgcolor=COL_CARD, bordercolor=COL_BORDER, borderwidth=1.5,
+            font=dict(size=13, color=COL_TEXT, family="JetBrains Mono"),
+        ),
+        hovermode="x unified",
+    )
+    if for_export:
+        ticker_clean = ticker_label.strip().upper() if ticker_label.strip() else "TITOLO"
+        titolo = f"Smart DCA Directa · {ticker_clean} · {budget:,}€".replace(",", ".")
+        sub = (f"PMC €{pmc_value:.3f} · BE +{break_even_pct:.2f}% · "
+               f"P/L {'+' if perdita_eur >= 0 else ''}€{perdita_eur:.2f} ({perdita_pct:+.2f}%)")
+        layout_kwargs["title"] = dict(
+            text=f"<b>{titolo}</b><br><sup style='color:{COL_TEXT_LABEL};'>{sub}</sup>",
+            font=dict(size=18, color=COL_TEXT), x=0.5, xanchor="center",
+        )
+        layout_kwargs["width"] = 1080
+        layout_kwargs["height"] = 1080
+        layout_kwargs["margin"] = dict(l=60, r=80, t=110, b=60)
+    else:
+        layout_kwargs["height"] = 460
+        layout_kwargs["margin"] = dict(l=15, r=70, t=40, b=45)
 
-st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
+    fig.update_layout(**layout_kwargs)
+    return fig
+
+fig_display = build_chart(for_export=False)
+st.plotly_chart(fig_display, use_container_width=True, config={"displayModeBar": False})
 
 
 # ============================================================
@@ -578,99 +725,204 @@ bz_col1, bz_col2, bz_col3 = st.columns(3)
 for col, (key_p, key_pct, label, color) in zip(
     [bz_col1, bz_col2, bz_col3],
     [
-        ("p1sigma", "pct1", "-1σ ENTRY", COLORE_ACCENT),
-        ("p2sigma", "pct2", "-2σ ADD", "#F59E0B"),
-        ("p3sigma", "pct3", "-3σ AVERAGE", COLORE_RISCHIO),
+        ("p1sigma", "pct1", "-1σ", COL_ACCENT),
+        ("p2sigma", "pct2", "-2σ", COL_WARN),
+        ("p3sigma", "pct3", "-3σ", COL_RISK),
     ]
 ):
     with col:
         triggered = prezzo_finale <= buy_zones[key_p]
-        trig_label = "🟢 TRIGGERED" if triggered else "⚪ pending"
+        trig_label = "🟢 HIT" if triggered else "⚪ —"
         st.markdown(f"""
-        <div class="metric-card" style="border-left:3px solid {color};">
+        <div class="metric-card" style="border-left:4px solid {color};">
             <div class="metric-label" style="color:{color};">{label}</div>
-            <div class="metric-value" style="font-size:1.1rem;">€{buy_zones[key_p]:.3f}</div>
-            <div class="metric-delta neutral">{buy_zones[key_pct]:+.1f}% · {trig_label}</div>
+            <div class="metric-value" style="font-size:1.3rem;">€{buy_zones[key_p]:.2f}</div>
+            <div class="metric-delta neutral">{buy_zones[key_pct]:+.1f}%</div>
+            <div class="metric-delta" style="font-weight:800;">{trig_label}</div>
         </div>
         """, unsafe_allow_html=True)
 
 
 # ============================================================
-# LEGENDA INGEGNERIA DEL RISCHIO
+# EXPORT + ARCHIVIO
+# ============================================================
+st.markdown('<div class="section-title">📤 Esporta & Salva</div>', unsafe_allow_html=True)
+
+ticker_clean = ticker_label.strip().upper() if ticker_label.strip() else "TITOLO"
+timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+nome_sim = f"{ticker_clean}_{budget}_{timestamp}"
+
+col_exp1, col_exp2 = st.columns(2)
+
+with col_exp1:
+    try:
+        fig_export = build_chart(for_export=True)
+        png_bytes = fig_export.to_image(format="png", width=1080, height=1080, scale=2)
+        st.download_button(
+            label="📸 Scarica PNG",
+            data=png_bytes,
+            file_name=f"{nome_sim}.png",
+            mime="image/png",
+            use_container_width=True,
+        )
+    except Exception:
+        st.warning("⚠ Export PNG richiede `kaleido` (già incluso in requirements.txt)")
+
+with col_exp2:
+    if st.button("💾 Salva in archivio", use_container_width=True):
+        sim_data = {
+            "id": timestamp,
+            "nome": nome_sim,
+            "ticker": ticker_clean,
+            "budget": budget,
+            "n_tranche": n_tranche_choice,
+            "prezzo_iniziale": prezzo_iniziale,
+            "sigma": sigma_giornaliera,
+            "crolli": crolli_usati,
+            "pmc_finale": pmc_value,
+            "break_even_pct": break_even_pct,
+            "prezzo_finale": prezzo_finale,
+            "perdita_eur": perdita_eur,
+            "perdita_pct": perdita_pct,
+            "azioni_totali": pmc_finale.get("azioni_totali", 0),
+            "investito": pmc_finale.get("costo_totale", 0),
+            "commissioni": pmc_finale.get("commissioni_totali", 0),
+            "data_creazione": datetime.now().strftime("%d/%m/%Y %H:%M"),
+        }
+        st.session_state.archivio.append(sim_data)
+        st.success(f"✓ Salvata: {nome_sim}")
+
+
+# ============================================================
+# ARCHIVIO STORICO
+# ============================================================
+st.markdown('<div class="section-title">🗄️ Archivio Storico</div>', unsafe_allow_html=True)
+
+if not st.session_state.archivio:
+    st.caption("Nessuna simulazione salvata. Usa 'Salva in archivio' per aggiungerla qui.")
+else:
+    for idx in range(len(st.session_state.archivio) - 1, -1, -1):
+        sim = st.session_state.archivio[idx]
+        col_a, col_b = st.columns([10, 1])
+        with col_a:
+            be_color = COL_PROFIT if sim["break_even_pct"] < 10 else (COL_WARN if sim["break_even_pct"] < 20 else COL_RISK)
+            pl_color = COL_PROFIT if sim["perdita_eur"] >= 0 else COL_RISK
+            pl_sign = '+' if sim["perdita_eur"] >= 0 else ''
+            st.markdown(f"""
+            <div class="archive-item">
+                <div style="font-weight:800; color:{COL_TEXT}; font-size:0.95rem;">
+                    {sim["ticker"]} · €{sim["budget"]:,} · {sim["n_tranche"]}T
+                </div>
+                <div style="color:{COL_TEXT_DIM}; font-size:0.78rem; margin-top:0.3rem;">
+                    {sim["data_creazione"]}
+                </div>
+                <div style="margin-top:0.5rem; display:flex; gap:1rem; flex-wrap:wrap;">
+                    <span><span style="color:{COL_TEXT_LABEL};">PMC </span>
+                        <strong style="color:{COL_ACCENT};">€{sim["pmc_finale"]:.3f}</strong></span>
+                    <span><span style="color:{COL_TEXT_LABEL};">BE </span>
+                        <strong style="color:{be_color};">+{sim["break_even_pct"]:.2f}%</strong></span>
+                    <span><span style="color:{COL_TEXT_LABEL};">P/L </span>
+                        <strong style="color:{pl_color};">{pl_sign}€{sim["perdita_eur"]:.2f}</strong></span>
+                </div>
+            </div>
+            """.replace(",", "."), unsafe_allow_html=True)
+        with col_b:
+            if st.button("🗑️", key=f"del_{sim['id']}_{idx}", help="Elimina simulazione"):
+                st.session_state.archivio.pop(idx)
+                st.rerun()
+
+    archivio_json = json.dumps(st.session_state.archivio, indent=2, ensure_ascii=False)
+    st.download_button(
+        label="📥 Esporta archivio (JSON)",
+        data=archivio_json,
+        file_name=f"smart_dca_archivio_{datetime.now().strftime('%Y%m%d')}.json",
+        mime="application/json",
+        use_container_width=True,
+    )
+
+
+# ============================================================
+# INGEGNERIA DEL RISCHIO
 # ============================================================
 st.markdown('<div class="section-title">🛠️ Ingegneria del Rischio</div>', unsafe_allow_html=True)
 
 with st.expander("💰 Money Management — Perché tranche crescenti?"):
     st.markdown(f"""
-**La regola del 20/30/50 (e 10/20/30/40)** non è arbitraria. Si fonda su tre principi:
+**La regola 20/30/50 (3 tranche) e 10/20/30/40 (4 tranche)** si fonda su tre principi:
 
-1. **Asimmetria della convinzione**: al primo ingresso *non sai* se hai ragione. La tranche iniziale piccola (10–20%) è una "sonda".
-2. **Pull-down matematico del PMC**: la tranche più grande va investita al prezzo più basso. Se compri 50% del capitale al minimo, sposti il PMC molto più di quanto farebbe l'equal-weight.
-3. **Munizioni residue**: lasciare il 40–50% del capitale per l'ultima tranche significa avere potenza di fuoco proprio quando il mercato è in panic mode (quando gli altri vendono).
+1. **Asimmetria della convinzione**: al primo ingresso *non sai* se hai ragione. La tranche iniziale piccola è una "sonda".
+2. **Pull-down matematico del PMC**: la tranche più grande va investita al prezzo più basso. Se compri il 50% del capitale al minimo, sposti il PMC molto più di quanto farebbe l'equal-weight.
+3. **Munizioni residue**: lasciare 40–50% del capitale per l'ultima tranche significa avere potenza di fuoco quando il mercato è in panic mode.
 
 **Esempio numerico** ({budget:,}€):
-- Equal-weight su 4 tranche → PMC = media semplice dei 4 prezzi
-- Pesato 10/20/30/40 → l'ultimo prezzo pesa **4 volte** il primo
+- Equal-weight su {n_tranche_choice} tranche → PMC = media semplice dei {n_tranche_choice} prezzi
+- Pesato {'10/20/30/40' if n_tranche_choice == 4 else '20/30/50'} → l'ultimo prezzo pesa **{'4' if n_tranche_choice == 4 else '2.5'} volte** il primo
 
 Se il prezzo crolla, il PMC scende molto più velocemente.
 """.replace(",", "."))
 
-with st.expander("⚖️ Incidenza Commissionale — Il filtro 0.20%"):
-    st.markdown(f"""
-Directa applica una **commissione fissa di 1.50€** indipendente dal controvalore.
+with st.expander("⚖️ Commissione Directa — Il filtro 0.20%"):
+    st.markdown("""
+**Commissione Directa**: 1.90€ ogni 1000€ di controvalore (**0.19%**), minimo **1.50€**.
 
-**Il problema**: 1.50€ su 500€ = **0.30%** (alto). 1.50€ su 1.500€ = **0.10%** (accettabile).
+| Controvalore | Commissione | Incidenza |
+|---|---|---|
+| 500€ | 1.50€ (min) | 0.300% ❌ |
+| 789€ | 1.50€ (min) | 0.190% ✓ |
+| 1.000€ | 1.90€ | 0.190% ✓ |
+| 2.000€ | 3.80€ | 0.190% ✓ |
+| 5.000€ | 9.50€ | 0.190% ✓ |
 
-**La regola d'oro**: la commissione *one-way* non deve superare lo **0.20%** del controvalore.
-Questo significa che ogni tranche deve essere ≥ **750€**.
+**La regola d'oro**: la commissione one-way non deve superare lo **0.20%** del controvalore. Sotto ~789€ scatta il minimo fisso di 1.50€ e l'incidenza supera lo 0.20% → l'app marca la tranche come *bloccata*.
 
-Considerando che andata + ritorno costano 3€, su una tranche da 750€ paghi lo 0.40% di "frizione" — già al limite di quanto una mean-reversion può rendere in pochi giorni.
+Tranche minima efficiente: **~750€**.
 
-**Cosa fa questa app**: se imposti tranche troppo piccole, le marca come 🔴 *bloccate* e te lo dice. Non te lo fa scegliere per non regalare soldi al broker.
+Considerando andata + ritorno (0.38% complessivo a regime), su una mean-reversion del 1% lasci sul tavolo già metà del rendimento atteso.
 """)
 
-with st.expander("📐 Legge del Recupero Percentuale — La matematica delle perdite"):
+with st.expander("📐 Legge del Recupero Percentuale"):
     st.markdown("""
-Questa è la trappola psicologica più sottovalutata del trading:
+La trappola psicologica più sottovalutata del trading:
 
 | Perdita | Recupero necessario |
-|---------|---------------------|
-| −10%    | +11.1%              |
-| −20%    | +25.0%              |
-| −30%    | +42.9%              |
-| −50%    | **+100%**           |
-| −70%    | +233%               |
+|---|---|
+| −10% | +11.1% |
+| −20% | +25.0% |
+| −30% | +42.9% |
+| −40% | +66.7% |
+| **−50%** | **+100%** |
+| −70% | +233% |
 
-Formula: `recupero = perdita / (1 - perdita)`
+Formula: `recupero = perdita / (1 − perdita)`
 
 **Implicazione operativa**:
-- Sotto il **−10%** dal PMC, mediare ha senso solo se la tesi è ancora valida.
-- Sotto il **−25%**, devi chiederti se non sei in un "value trap".
-- Sotto il **−40%**, lo *stop loss* è quasi sempre meglio del *double down*.
+- Sotto **−10%** dal PMC → mediare se la tesi è ancora valida
+- Sotto **−25%** → chiediti se non sei in una "value trap"
+- Sotto **−40%** → lo stop loss è quasi sempre meglio del double down
 
-**Lo Smart DCA funziona** finché i crolli rimangono entro range statistici (entro ±2–3σ). Oltre, il titolo probabilmente sta scontando informazioni *fondamentali* nuove (delisting, fraud, FDA rejection per i biotech) e nessuna media risolve.
+Lo Smart DCA funziona finché i crolli stanno entro range statistici (±2-3σ). Oltre, il titolo sta probabilmente scontando informazioni *fondamentali* nuove (delisting, FDA rejection, fraud) e nessuna media risolve.
 """)
 
-with st.expander("📊 Deviazioni Standard — Come leggere le Buy Zones"):
+with st.expander("📊 Deviazioni Standard — Buy Zones"):
     st.markdown(f"""
-Le **Buy Zones** sono calcolate sulla volatilità giornaliera (σ) che hai impostato in sidebar ({sigma_giornaliera}%).
+Le **Buy Zones** usano la volatilità giornaliera σ ({sigma_giornaliera}%):
 
-- **−1σ**: copre il 68% dei movimenti normali. È una correzione *fisiologica*. Entrata standard.
+- **−1σ**: copre il 68% dei movimenti. Correzione *fisiologica*. Entrata standard.
 - **−2σ**: copre il 95%. Statisticamente "oversold". Buon punto di add.
-- **−3σ**: copre il 99.7%. È un evento raro. O è panic selling (occasione), o c'è una *news* che cambia tutto (fuggi).
+- **−3σ**: copre il 99.7%. Evento raro. O panic selling (occasione), o c'è una *news* che cambia tutto.
 
-**Tarare σ correttamente è essenziale**:
+**Tarare σ correttamente**:
 - Blue chip (Enel, Generali): σ ≈ 1.0–1.5%
 - Tech mid-cap NASDAQ: σ ≈ 2.5–3.5%
-- **Biotech small-cap pre-catalyst**: σ ≈ 4–7% (il tuo caso)
+- **Biotech small-cap pre-catalyst**: σ ≈ 4–7%
 - Biotech in PDUFA week: σ può schizzare al 15–20%
 
-Sottostimare σ ti fa entrare troppo presto. Sovrastimarla ti fa aspettare prezzi che non arrivano mai.
+Sottostimare σ → entri troppo presto. Sovrastimarla → aspetti prezzi che non arrivano mai.
 """)
 
 st.markdown("---")
 st.caption(
     "⚠️ **Disclaimer**: nessuna simulazione garantisce il profitto. Lo Smart DCA è una "
-    "tecnica di gestione del rischio, non una strategia di previsione. Il successo dipende "
-    "dalla disciplina di eseguire l'ultima tranche quando *tutto è rosso* — è lì che la matematica lavora per te."
+    "tecnica di gestione del rischio, non di previsione. Il successo dipende dalla disciplina "
+    "di eseguire l'ultima tranche quando *tutto è rosso* — è lì che la matematica lavora per te."
 )
