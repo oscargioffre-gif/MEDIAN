@@ -911,10 +911,13 @@ nome_sim = f"{ticker_clean}_{budget}_{timestamp}"
 def genera_png_matplotlib():
     """
     Genera PNG via matplotlib — robusto su Streamlit Cloud (zero deps di sistema).
-    Output 1080×1350 (formato Instagram story-friendly).
+    Output verticale formato story-friendly con:
+    - Header (titolo + ticker + budget)
+    - Grafico prezzo/PMC con Buy Zones
+    - Tabella tranche con numero azioni per ciascuna
+    - Griglia statistiche chiave
     """
     import matplotlib.pyplot as plt
-    import matplotlib.patches as mpatches
     from matplotlib.patches import FancyBboxPatch
     import io
 
@@ -923,19 +926,20 @@ def genera_png_matplotlib():
         'font.weight': 'bold',
     })
 
-    fig, (ax_head, ax_chart, ax_stats) = plt.subplots(
-        3, 1, figsize=(10.8, 13.5),
-        gridspec_kw={'height_ratios': [1.2, 4.5, 2.2]},
+    # 4 sezioni: header, chart, tranche, stats
+    fig, (ax_head, ax_chart, ax_tranche, ax_stats) = plt.subplots(
+        4, 1, figsize=(10.8, 16.2),
+        gridspec_kw={'height_ratios': [1.0, 4.0, 2.8, 2.2]},
         facecolor=COL_BG,
     )
 
     # ---- HEADER ----
     ax_head.set_facecolor(COL_BG)
     ax_head.axis('off')
-    ax_head.text(0.5, 0.75, "MEDIAN STRATEGY DIRECTA",
+    ax_head.text(0.5, 0.78, "MEDIAN STRATEGY DIRECTA",
                  ha='center', va='center', fontsize=28, fontweight='bold',
                  color=COL_PROFIT, transform=ax_head.transAxes)
-    ax_head.text(0.5, 0.35, f"{ticker_clean} · Budget {budget:,}€ · {n_tranche_choice} Tranche".replace(",", "."),
+    ax_head.text(0.5, 0.38, f"{ticker_clean} · Budget {budget:,}€ · {n_tranche_choice} Tranche".replace(",", "."),
                  ha='center', va='center', fontsize=16, fontweight='bold',
                  color=COL_TEXT_LABEL, transform=ax_head.transAxes)
     ax_head.text(0.5, 0.08, datetime.now().strftime("%d/%m/%Y · %H:%M"),
@@ -945,11 +949,9 @@ def genera_png_matplotlib():
     # ---- CHART ----
     ax_chart.set_facecolor(COL_CARD)
 
-    # Linea prezzo
     ax_chart.plot(giorni, prezzi_serie, 'o-', color=COL_RISK, linewidth=3.5,
                   markersize=12, markeredgewidth=2.5, markeredgecolor=COL_BG,
                   label='Prezzo', zorder=3)
-    # Linea PMC
     pmc_clean = [p if p else None for p in pmc_serie]
     valid_idx = [i for i, p in enumerate(pmc_clean) if p is not None]
     valid_x = [giorni[i] for i in valid_idx]
@@ -958,7 +960,6 @@ def genera_png_matplotlib():
                   markersize=12, markeredgewidth=2.5, markeredgecolor=COL_BG,
                   label='PMC', zorder=4)
 
-    # Buy zones
     for zone, label, color in [
         (buy_zones["p1sigma"], "-1σ", COL_ACCENT),
         (buy_zones["p2sigma"], "-2σ", COL_WARN),
@@ -968,7 +969,6 @@ def genera_png_matplotlib():
         ax_chart.text(max(giorni) + 0.15, zone, f" {label}  €{zone:.2f}",
                       color=color, fontsize=11, fontweight='bold', va='center')
 
-    # Marker tranche
     for a in risultato["acquisti"]:
         ax_chart.scatter(a["giorno"], a["prezzo"], s=400, c=COL_ACCENT,
                          edgecolors=COL_BG, linewidths=3, zorder=5)
@@ -981,14 +981,96 @@ def genera_png_matplotlib():
     ax_chart.set_xlabel('GIORNO', color=COL_TEXT_LABEL, fontsize=12, fontweight='bold', labelpad=10)
     ax_chart.set_ylabel('PREZZO (€)', color=COL_TEXT_LABEL, fontsize=12, fontweight='bold', labelpad=10)
     ax_chart.tick_params(colors=COL_TEXT, labelsize=11)
-    ax_chart.spines['bottom'].set_color(COL_BORDER)
-    ax_chart.spines['top'].set_color(COL_BORDER)
-    ax_chart.spines['left'].set_color(COL_BORDER)
-    ax_chart.spines['right'].set_color(COL_BORDER)
+    for spine in ax_chart.spines.values():
+        spine.set_color(COL_BORDER)
     ax_chart.grid(True, color=COL_BORDER, alpha=0.4, linestyle='-', linewidth=0.5)
     ax_chart.set_xticks(giorni)
     ax_chart.legend(loc='upper right', facecolor=COL_CARD, edgecolor=COL_BORDER,
                     labelcolor=COL_TEXT, fontsize=12, framealpha=1)
+
+    # ---- TRANCHE TABLE ----
+    ax_tranche.set_facecolor(COL_BG)
+    ax_tranche.axis('off')
+
+    # Titolo sezione
+    ax_tranche.text(0.5, 0.96, "PIANO TRANCHE",
+                    ha='center', va='top', fontsize=18, fontweight='bold',
+                    color=COL_TEXT, transform=ax_tranche.transAxes)
+
+    # Header tabella
+    headers = ["#", "PESO", "CAPITALE", "PREZZO", "AZIONI", "COMM."]
+    col_x = [0.05, 0.17, 0.32, 0.50, 0.68, 0.85]  # posizioni X colonne
+    header_y = 0.80
+    for hx, h in zip(col_x, headers):
+        ax_tranche.text(hx, header_y, h, ha='left', va='center',
+                        fontsize=11, fontweight='bold',
+                        color=COL_TEXT_LABEL, transform=ax_tranche.transAxes)
+
+    # Linea separatrice header
+    ax_tranche.plot([0.04, 0.96], [header_y - 0.08, header_y - 0.08],
+                    color=COL_BORDER, linewidth=1.5,
+                    transform=ax_tranche.transAxes, clip_on=False)
+
+    # Righe tranche (sia eseguite che pending/bloccate per chiarezza)
+    row_start = header_y - 0.18
+    row_height = 0.16
+
+    # Colori per tranche progressivi
+    tranche_colors = ["#7FD3FF", COL_ACCENT, COL_PROFIT, COL_WARN]
+
+    for idx, t in enumerate(tranches_raw):
+        y = row_start - idx * row_height
+        eseguito = next((a for a in risultato["acquisti"] if a["tranche_num"] == t["num"]), None)
+
+        # Bullet colorato + numero tranche
+        t_color = tranche_colors[idx] if t["valido"] else COL_RISK
+        ax_tranche.scatter(col_x[0] + 0.01, y, s=180, c=t_color,
+                           edgecolors=COL_BG, linewidths=2,
+                           transform=ax_tranche.transAxes, clip_on=False, zorder=3)
+        ax_tranche.text(col_x[0] + 0.01, y, f"{t['num']}",
+                        ha='center', va='center', fontsize=11, fontweight='bold',
+                        color=COL_BG, transform=ax_tranche.transAxes, zorder=4)
+
+        # Peso
+        ax_tranche.text(col_x[1], y, f"{int(t['peso']*100)}%",
+                        ha='left', va='center', fontsize=14, fontweight='bold',
+                        color=COL_TEXT, transform=ax_tranche.transAxes)
+
+        # Capitale
+        ax_tranche.text(col_x[2], y, f"€{t['capitale_lordo']:,.0f}".replace(",", "."),
+                        ha='left', va='center', fontsize=14, fontweight='bold',
+                        color=COL_TEXT, transform=ax_tranche.transAxes)
+
+        # Prezzo (solo se eseguita)
+        if eseguito:
+            prezzo_str = f"€{eseguito['prezzo']:.3f}"
+            azioni_str = f"{eseguito['n_azioni']}"
+            azioni_color = t_color
+            prezzo_color = COL_TEXT
+        elif not t["valido"]:
+            prezzo_str = "—"
+            azioni_str = "✗ BLOCCATA"
+            azioni_color = COL_RISK
+            prezzo_color = COL_TEXT_DIM
+        else:
+            prezzo_str = "in attesa"
+            azioni_str = f"~{t['n_azioni_iniziali']}"
+            azioni_color = COL_TEXT_DIM
+            prezzo_color = COL_TEXT_DIM
+
+        ax_tranche.text(col_x[3], y, prezzo_str,
+                        ha='left', va='center', fontsize=14, fontweight='bold',
+                        color=prezzo_color, transform=ax_tranche.transAxes)
+
+        # Azioni (in evidenza con colore tranche)
+        ax_tranche.text(col_x[4], y, azioni_str,
+                        ha='left', va='center', fontsize=15, fontweight='bold',
+                        color=azioni_color, transform=ax_tranche.transAxes)
+
+        # Commissione
+        ax_tranche.text(col_x[5], y, f"€{t['commissione']:.2f}",
+                        ha='left', va='center', fontsize=13,
+                        color=COL_TEXT_DIM, transform=ax_tranche.transAxes)
 
     # ---- STATS GRID ----
     ax_stats.set_facecolor(COL_BG)
@@ -1003,7 +1085,7 @@ def genera_png_matplotlib():
         ("BREAK-EVEN", f"+{break_even_pct:.2f}%",                  be_color),
         ("INVESTITO", f"€{pmc_finale.get('costo_totale', 0):,.0f}".replace(",", "."), COL_TEXT),
         ("P/L",       f"{pl_sign}€{perdita_eur:.2f}",              pl_color),
-        ("AZIONI",    f"{pmc_finale.get('azioni_totali', 0)}",     COL_TEXT),
+        ("AZIONI TOT", f"{pmc_finale.get('azioni_totali', 0)}",    COL_TEXT),
         ("COMM. TOT", f"€{pmc_finale.get('commissioni_totali', 0):.2f}", COL_TEXT_DIM),
     ]
     n_cols = 3
@@ -1028,7 +1110,7 @@ def genera_png_matplotlib():
                       color=color, transform=ax_stats.transAxes)
 
     plt.tight_layout()
-    plt.subplots_adjust(top=0.97, bottom=0.03, left=0.06, right=0.94, hspace=0.25)
+    plt.subplots_adjust(top=0.97, bottom=0.03, left=0.06, right=0.94, hspace=0.20)
 
     buf = io.BytesIO()
     fig.savefig(buf, format='png', facecolor=COL_BG, dpi=150, bbox_inches='tight')
