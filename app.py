@@ -536,6 +536,8 @@ st.markdown(
 # ============================================================
 # CALCOLI
 # ============================================================
+ticker_clean = ticker_label.strip().upper() if ticker_label.strip() else "TITOLO"
+
 pesi = PESI_3 if n_tranche_choice == 3 else PESI_4
 tranches_raw = calcola_tranches(budget, pesi, prezzo_iniziale)
 tranches_valide = [t for t in tranches_raw if t["valido"]]
@@ -902,7 +904,6 @@ for col, (key_p, key_pct, label, color) in zip(
 # ============================================================
 st.markdown('<div class="section-title">📤 Esporta & Salva</div>', unsafe_allow_html=True)
 
-ticker_clean = ticker_label.strip().upper() if ticker_label.strip() else "TITOLO"
 timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
 nome_sim = f"{ticker_clean}_{budget}_{timestamp}"
 
