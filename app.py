@@ -1,5 +1,5 @@
 """
-Smart DCA Directa — Simulatore di Dollar Cost Averaging ottimizzato
+Median Strategy Directa — Simulatore di Dollar Cost Averaging ottimizzato
 per il broker Directa.
 
 Commissione Directa (regime "Start"):
@@ -48,7 +48,7 @@ PESI_3 = [0.20, 0.30, 0.50]
 PESI_4 = [0.10, 0.20, 0.30, 0.40]
 
 st.set_page_config(
-    page_title="Smart DCA Directa",
+    page_title="Median Strategy Directa",
     page_icon="📊",
     layout="centered",
     initial_sidebar_state="collapsed",
@@ -506,7 +506,7 @@ with st.sidebar:
 # ============================================================
 # HEADER
 # ============================================================
-st.markdown('<div class="main-title">Smart DCA Directa</div>', unsafe_allow_html=True)
+st.markdown('<div class="main-title">Median Strategy Directa</div>', unsafe_allow_html=True)
 ticker_display = f" · {ticker_label.upper()}" if ticker_label else ""
 st.markdown(
     f'<div class="main-sub">Budget {budget:,}€ · {n_tranche_choice} tranche{ticker_display}</div>'.replace(",", "."),
@@ -695,7 +695,7 @@ def build_chart(for_export=False):
     )
     if for_export:
         ticker_clean = ticker_label.strip().upper() if ticker_label.strip() else "TITOLO"
-        titolo = f"Smart DCA Directa · {ticker_clean} · {budget:,}€".replace(",", ".")
+        titolo = f"Median Strategy Directa · {ticker_clean} · {budget:,}€".replace(",", ".")
         sub = (f"PMC €{pmc_value:.3f} · BE +{break_even_pct:.2f}% · "
                f"P/L {'+' if perdita_eur >= 0 else ''}€{perdita_eur:.2f} ({perdita_pct:+.2f}%)")
         layout_kwargs["title"] = dict(
@@ -835,7 +835,7 @@ else:
     st.download_button(
         label="📥 Esporta archivio (JSON)",
         data=archivio_json,
-        file_name=f"smart_dca_archivio_{datetime.now().strftime('%Y%m%d')}.json",
+        file_name=f"median_strategy_archivio_{datetime.now().strftime('%Y%m%d')}.json",
         mime="application/json",
         use_container_width=True,
     )
@@ -900,7 +900,7 @@ Formula: `recupero = perdita / (1 − perdita)`
 - Sotto **−25%** → chiediti se non sei in una "value trap"
 - Sotto **−40%** → lo stop loss è quasi sempre meglio del double down
 
-Lo Smart DCA funziona finché i crolli stanno entro range statistici (±2-3σ). Oltre, il titolo sta probabilmente scontando informazioni *fondamentali* nuove (delisting, FDA rejection, fraud) e nessuna media risolve.
+La Median Strategy funziona finché i crolli stanno entro range statistici (±2-3σ). Oltre, il titolo sta probabilmente scontando informazioni *fondamentali* nuove (delisting, FDA rejection, fraud) e nessuna media risolve.
 """)
 
 with st.expander("📊 Deviazioni Standard — Buy Zones"):
@@ -922,7 +922,7 @@ Sottostimare σ → entri troppo presto. Sovrastimarla → aspetti prezzi che no
 
 st.markdown("---")
 st.caption(
-    "⚠️ **Disclaimer**: nessuna simulazione garantisce il profitto. Lo Smart DCA è una "
+    "⚠️ **Disclaimer**: nessuna simulazione garantisce il profitto. La Median Strategy è una "
     "tecnica di gestione del rischio, non di previsione. Il successo dipende dalla disciplina "
     "di eseguire l'ultima tranche quando *tutto è rosso* — è lì che la matematica lavora per te."
 )
