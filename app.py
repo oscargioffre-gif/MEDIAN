@@ -609,103 +609,133 @@ with col2:
 acquisti_list = risultato["acquisti"]
 n_acq = len(acquisti_list)
 
-# Costruisco i passaggi dell'esempio reale
 if n_acq > 0:
-    # Lista degli acquisti formattata
-    riga_acquisti = ""
-    for a in acquisti_list:
-        riga_acquisti += (
-            f"- **Giorno {a['giorno']}**: T{a['tranche_num']} → "
-            f"{a['n_azioni']} az. × €{a['prezzo']:.3f} = "
-            f"€{a['n_azioni'] * a['prezzo']:.2f} "
-            f"(+ commissione €{a['commissione']:.2f})\n"
-        )
-
+    # Pre-calcolo tutti i valori in variabili locali
     totale_azioni = pmc_finale.get('azioni_totali', 0)
     totale_investito_azioni = pmc_finale.get('investito_totale', 0)
     totale_comm = pmc_finale.get('commissioni_totali', 0)
     totale_costo = pmc_finale.get('costo_totale', 0)
     valore_finale = totale_azioni * prezzo_finale
 
-    pl_sign_txt = "guadagno" if perdita_eur >= 0 else "perdita"
+    pl_sign_str = '+' if perdita_eur >= 0 else ''
+    pl_word = "guadagno" if perdita_eur >= 0 else "perdita"
     pl_emoji = "🟢" if perdita_eur >= 0 else "🔴"
 
+    # Confronto con all-in
+    be_allin = ((prezzo_iniziale / prezzo_finale - 1) * 100) if prezzo_finale > 0 else 0
+    risparmio_be = be_allin - break_even_pct
+
+    # Formatto budget con punto come migliaia (italiano)
+    budget_fmt = f"{budget:,}".replace(",", ".")
+    investito_fmt = f"{totale_costo:,.2f}".replace(",", ".")
+    investito_azioni_fmt = f"{totale_investito_azioni:,.2f}".replace(",", ".")
+    valore_finale_fmt = f"{valore_finale:,.2f}".replace(",", ".")
+    perdita_fmt = f"{abs(perdita_eur):.2f}"
+
+    # Lista acquisti formattata
+    riga_acquisti = ""
+    for a in acquisti_list:
+        controvalore_t = a['n_azioni'] * a['prezzo']
+        controvalore_fmt = f"{controvalore_t:,.2f}".replace(",", ".")
+        riga_acquisti += (
+            f"- **Giorno {a['giorno']}** → Tranche {a['tranche_num']}: "
+            f"{a['n_azioni']} azioni × €{a['prezzo']:.3f} = "
+            f"€{controvalore_fmt} (+ commissione €{a['commissione']:.2f})\n"
+        )
+
     with st.expander("❓ **Come si leggono i numeri?** — Spiegazione con i tuoi dati"):
-        st.markdown(f"""
-### 📋 Cosa è successo nella simulazione
+        # SEZIONE 1 — Cosa è successo
+        st.markdown("### 📋 Cosa è successo nella simulazione")
+        st.markdown(
+            f"Hai impostato budget **€{budget_fmt}** su **{n_tranche_choice} tranche** "
+            f"per il titolo **{ticker_clean}** che parte da **€{prezzo_iniziale:.2f}**. "
+            f"L'app ha simulato il crollo che hai impostato nello Stress Test ed eseguito "
+            f"**{n_acq} acquisti**:"
+        )
+        st.markdown(riga_acquisti)
 
-Hai impostato budget **€{budget:,}** su **{n_tranche_choice} tranche** per il titolo
-**{ticker_clean}** che parte da €{prezzo_iniziale:.2f}. L'app ha simulato il crollo
-che hai impostato nello Stress Test e ha eseguito {n_acq} acquisti:
+        st.markdown("---")
+        st.markdown("### 🧮 Da dove vengono i numeri")
 
-{riga_acquisti}
----
+        # 1 — INVESTITO
+        st.markdown(f"**1️⃣ INVESTITO = €{investito_fmt}**")
+        st.markdown(
+            f"È quanto hai *speso davvero* sommando tutti gli acquisti più le commissioni:\n"
+            f"- Costo azioni: €{investito_azioni_fmt}\n"
+            f"- Commissioni Directa: €{totale_comm:.2f}\n"
+            f"- **Totale: €{investito_fmt}**"
+        )
 
-### 🧮 Da dove vengono i numeri
+        # 2 — AZIONI
+        st.markdown(f"**2️⃣ AZIONI TOTALI = {totale_azioni}**")
+        st.markdown(f"Hai accumulato {totale_azioni} azioni sommando le quantità di ogni tranche.")
 
-**1️⃣ INVESTITO = €{totale_costo:,.2f}**
-È quanto hai *speso davvero* sommando tutti gli acquisti più le commissioni:
-- Costo azioni: €{totale_investito_azioni:,.2f}
-- Commissioni Directa: €{totale_comm:.2f}
-- **Totale: €{totale_costo:,.2f}**
+        # 3 — PMC
+        st.markdown(f"**3️⃣ PMC = €{pmc_value:.3f}** *(Prezzo Medio di Carico)*")
+        st.markdown("È il prezzo *medio ponderato* a cui hai comprato. Formula:")
+        st.code(
+            f"PMC = Costo Totale ÷ Azioni Totali\n"
+            f"    = €{investito_fmt} ÷ {totale_azioni}\n"
+            f"    = €{pmc_value:.3f}",
+            language="text"
+        )
+        st.markdown("È il tuo *vero* prezzo di acquisto, commissioni incluse.")
 
-**2️⃣ AZIONI TOTALI = {totale_azioni}**
-Hai accumulato {totale_azioni} azioni sommando le quantità di ogni tranche.
+        # 4 — Prezzo finale
+        st.markdown(f"**4️⃣ Prezzo finale di mercato = €{prezzo_finale:.3f}**")
+        st.markdown(f"Dopo tutti i crolli impostati, il titolo vale **€{prezzo_finale:.3f}**.")
 
-**3️⃣ PMC = €{pmc_value:.3f}** *(Prezzo Medio di Carico)*
-È il prezzo "medio ponderato" a cui hai comprato. Formula:
-```
-PMC = Costo Totale ÷ Azioni Totali
-    = €{totale_costo:,.2f} ÷ {totale_azioni}
-    = €{pmc_value:.3f}
-```
-È il tuo *vero* prezzo di acquisto, commissioni incluse.
+        # 5 — VALORE ATTUALE
+        st.markdown(f"**5️⃣ VALORE ATTUALE = €{valore_finale_fmt}**")
+        st.markdown("Quanto valgono ora le tue azioni se le vendessi al prezzo di mercato:")
+        st.code(
+            f"Valore = Azioni × Prezzo finale\n"
+            f"       = {totale_azioni} × €{prezzo_finale:.3f}\n"
+            f"       = €{valore_finale_fmt}",
+            language="text"
+        )
 
-**4️⃣ Prezzo finale di mercato = €{prezzo_finale:.3f}**
-Dopo tutti i crolli impostati, il titolo vale €{prezzo_finale:.3f}.
+        # 6 — P/L
+        st.markdown(f"**6️⃣ P/L = {pl_sign_str}€{perdita_eur:.2f} ({perdita_pct:+.2f}%)** {pl_emoji}")
+        st.markdown("Profit/Loss = quanto stai *guadagnando o perdendo* in questo momento:")
+        st.code(
+            f"P/L = Valore attuale − Investito\n"
+            f"    = €{valore_finale_fmt} − €{investito_fmt}\n"
+            f"    = {pl_sign_str}€{perdita_eur:.2f}",
+            language="text"
+        )
+        st.markdown(
+            f"Nel tuo caso: una **{pl_word} virtuale di €{perdita_fmt}** "
+            f"(= {perdita_pct:+.2f}% sul capitale investito)."
+        )
 
-**5️⃣ VALORE ATTUALE = €{valore_finale:,.2f}**
-Quanto valgono ora le tue azioni se le vendessi al prezzo di mercato:
-```
-Valore = Azioni × Prezzo finale
-       = {totale_azioni} × €{prezzo_finale:.3f}
-       = €{valore_finale:,.2f}
-```
+        # 7 — BREAK-EVEN
+        st.markdown(f"**7️⃣ BREAK-EVEN = +{break_even_pct:.2f}%**")
+        st.markdown("È di quanto deve risalire il prezzo per *tornare in pari*:")
+        st.code(
+            f"Break-even = (PMC ÷ Prezzo finale − 1) × 100\n"
+            f"           = (€{pmc_value:.3f} ÷ €{prezzo_finale:.3f} − 1) × 100\n"
+            f"           = +{break_even_pct:.2f}%",
+            language="text"
+        )
+        st.markdown(
+            f"Cioè dal prezzo attuale di €{prezzo_finale:.3f}, il titolo deve salire del "
+            f"**{break_even_pct:.2f}%** per riportarti a profitto zero."
+        )
 
-**6️⃣ P/L = {pl_sign}€{perdita_eur:.2f} ({perdita_pct:+.2f}%)** {pl_emoji}
-Profit/Loss = quanto stai *guadagnando o perdendo* in questo momento:
-```
-P/L = Valore attuale − Investito
-    = €{valore_finale:,.2f} − €{totale_costo:,.2f}
-    = {pl_sign}€{perdita_eur:.2f}
-```
-Nel tuo caso: una **{pl_sign_txt} virtuale di {pl_sign}€{perdita_eur:.2f}**
-(= {perdita_pct:+.2f}% sul capitale investito).
-
-**7️⃣ BREAK-EVEN = +{break_even_pct:.2f}%**
-È di quanto deve risalire il prezzo per *tornare in pari*:
-```
-Break-even = (PMC ÷ Prezzo finale − 1) × 100
-           = (€{pmc_value:.3f} ÷ €{prezzo_finale:.3f} − 1) × 100
-           = +{break_even_pct:.2f}%
-```
-Cioè dal prezzo attuale di €{prezzo_finale:.3f}, il titolo deve salire del
-**{break_even_pct:.2f}%** per riportarti a profitto zero.
-
----
-
-### 💡 Perché questo è importante
-
-Senza Median Strategy (cioè comprando tutto a €{prezzo_iniziale:.2f} il giorno 1),
-il tuo PMC sarebbe **€{prezzo_iniziale:.3f}** e il break-even necessario
-sarebbe **+{((prezzo_iniziale / prezzo_finale - 1) * 100):.2f}%**.
-
-Con la Median Strategy il break-even è sceso a **+{break_even_pct:.2f}%**
-— *risparmio di {((prezzo_iniziale / prezzo_finale - 1) * 100) - break_even_pct:.2f}
-punti percentuali* di recupero necessario.
-
-È questa la matematica che lavora per te.
-""".replace("{:,}".format(budget), f"{budget:,}".replace(",", ".")))
+        # CONFRONTO
+        st.markdown("---")
+        st.markdown("### 💡 Perché questo è importante")
+        st.markdown(
+            f"Senza Median Strategy (cioè comprando tutto il budget a €{prezzo_iniziale:.2f} "
+            f"il giorno 1), il tuo PMC sarebbe **€{prezzo_iniziale:.3f}** e il break-even "
+            f"necessario sarebbe **+{be_allin:.2f}%**."
+        )
+        st.markdown(
+            f"Con la Median Strategy il break-even è sceso a **+{break_even_pct:.2f}%** — "
+            f"*risparmio di {risparmio_be:.2f} punti percentuali* di recupero necessario."
+        )
+        st.markdown("È questa la matematica che lavora per te.")
 
 
 # ============================================================
