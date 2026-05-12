@@ -437,20 +437,41 @@ if "archivio" not in st.session_state:
 
 
 # ============================================================
-# SIDEBAR
+# SIDEBAR — Vuota (info app)
 # ============================================================
 with st.sidebar:
-    st.markdown("### ⚙️ PARAMETRI")
-
-    budget = st.slider(
-        "Budget totale (€)",
-        min_value=5000,
-        max_value=10000,
-        value=10000,
-        step=1000,
-        format="%d€",
+    st.markdown("### 📊 MEDIAN STRATEGY")
+    st.caption("Simulatore DCA per Directa")
+    st.markdown("---")
+    st.caption(
+        "**Commissione Directa**\n\n"
+        "1,90€ ogni 1000€\n"
+        "(min 1,50€)\n\n"
+        "**Filtro efficienza**\n\n"
+        "Incidenza ≤ 0,20%"
     )
 
+
+# ============================================================
+# HEADER
+# ============================================================
+st.markdown('<div class="main-title">Median Strategy Directa</div>', unsafe_allow_html=True)
+
+
+# ============================================================
+# PARAMETRI PRINCIPALI — visibili in pagina
+# ============================================================
+st.markdown('<div class="section-title">⚙️ Parametri</div>', unsafe_allow_html=True)
+
+budget = st.select_slider(
+    "Budget totale (€)",
+    options=[5000, 6000, 7000, 8000, 9000, 10000],
+    value=10000,
+    format_func=lambda x: f"{x:,}€".replace(",", "."),
+)
+
+col_p1, col_p2 = st.columns(2)
+with col_p1:
     n_tranche_choice = st.radio(
         "Numero tranche",
         options=[3, 4],
@@ -458,13 +479,24 @@ with st.sidebar:
         horizontal=True,
         help="3 tranche per ingressi più rapidi, 4 per maggior smoothing del PMC",
     )
-
-    ticker_label = st.text_input(
-        "Ticker / nome titolo",
-        value="",
-        placeholder="es. SRPT, MRNA, ENI.MI",
+with col_p2:
+    sigma_giornaliera = st.slider(
+        "Volatilità σ (%)",
+        min_value=1.0,
+        max_value=10.0,
+        value=4.0,
+        step=0.5,
+        help="Biotech small-cap: 4-7% · Mid-cap: 2-3% · Blue chip: 1-2%",
     )
 
+col_p3, col_p4 = st.columns(2)
+with col_p3:
+    ticker_label = st.text_input(
+        "Ticker",
+        value="",
+        placeholder="es. SRPT, ENI.MI",
+    )
+with col_p4:
     prezzo_iniziale = st.number_input(
         "Prezzo iniziale (€)",
         min_value=0.01,
@@ -474,19 +506,10 @@ with st.sidebar:
         format="%.2f",
     )
 
-    sigma_giornaliera = st.slider(
-        "Volatilità σ giornaliera (%)",
-        min_value=1.0,
-        max_value=10.0,
-        value=4.0,
-        step=0.5,
-        help="Biotech small-cap: 4-7% · Mid-cap: 2-3% · Blue chip: 1-2%",
-    )
-
-    st.markdown("---")
-    st.markdown("### 📉 STRESS TEST")
-    st.caption("Crollo consecutivo per giorno")
-
+# Stress Test in un expander pieghevole nel body principale
+st.markdown("")  # spacer
+with st.expander("📉 **Stress Test** — Imposta lo scenario di crollo", expanded=True):
+    st.caption("Crollo consecutivo per giorno (in % vs giorno precedente)")
     default_crolli = [-3.0, -5.0, -10.0, -7.0]
     crolli_widgets = []
     for i in range(n_tranche_choice - 1):
@@ -500,16 +523,12 @@ with st.sidebar:
             key=f"crollo_{i}",
         )
         crolli_widgets.append(cr)
-    crolli = crolli_widgets
+crolli = crolli_widgets
 
-
-# ============================================================
-# HEADER
-# ============================================================
-st.markdown('<div class="main-title">Median Strategy Directa</div>', unsafe_allow_html=True)
+# Sub-header dinamico sotto il titolo
 ticker_display = f" · {ticker_label.upper()}" if ticker_label else ""
 st.markdown(
-    f'<div class="main-sub">Budget {budget:,}€ · {n_tranche_choice} tranche{ticker_display}</div>'.replace(",", "."),
+    f'<div class="main-sub" style="margin-top:1rem;">Budget {budget:,}€ · {n_tranche_choice} tranche{ticker_display}</div>'.replace(",", "."),
     unsafe_allow_html=True,
 )
 
