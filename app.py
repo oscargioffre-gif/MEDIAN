@@ -447,7 +447,7 @@ with st.sidebar:
         min_value=5000,
         max_value=10000,
         value=10000,
-        step=500,
+        step=1000,
         format="%d€",
     )
 
