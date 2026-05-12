@@ -604,6 +604,111 @@ with col2:
 
 
 # ============================================================
+# LEGENDA P/L — Spiegazione passo-passo con numeri reali
+# ============================================================
+acquisti_list = risultato["acquisti"]
+n_acq = len(acquisti_list)
+
+# Costruisco i passaggi dell'esempio reale
+if n_acq > 0:
+    # Lista degli acquisti formattata
+    riga_acquisti = ""
+    for a in acquisti_list:
+        riga_acquisti += (
+            f"- **Giorno {a['giorno']}**: T{a['tranche_num']} → "
+            f"{a['n_azioni']} az. × €{a['prezzo']:.3f} = "
+            f"€{a['n_azioni'] * a['prezzo']:.2f} "
+            f"(+ commissione €{a['commissione']:.2f})\n"
+        )
+
+    totale_azioni = pmc_finale.get('azioni_totali', 0)
+    totale_investito_azioni = pmc_finale.get('investito_totale', 0)
+    totale_comm = pmc_finale.get('commissioni_totali', 0)
+    totale_costo = pmc_finale.get('costo_totale', 0)
+    valore_finale = totale_azioni * prezzo_finale
+
+    pl_sign_txt = "guadagno" if perdita_eur >= 0 else "perdita"
+    pl_emoji = "🟢" if perdita_eur >= 0 else "🔴"
+
+    with st.expander("❓ **Come si leggono i numeri?** — Spiegazione con i tuoi dati"):
+        st.markdown(f"""
+### 📋 Cosa è successo nella simulazione
+
+Hai impostato budget **€{budget:,}** su **{n_tranche_choice} tranche** per il titolo
+**{ticker_clean}** che parte da €{prezzo_iniziale:.2f}. L'app ha simulato il crollo
+che hai impostato nello Stress Test e ha eseguito {n_acq} acquisti:
+
+{riga_acquisti}
+---
+
+### 🧮 Da dove vengono i numeri
+
+**1️⃣ INVESTITO = €{totale_costo:,.2f}**
+È quanto hai *speso davvero* sommando tutti gli acquisti più le commissioni:
+- Costo azioni: €{totale_investito_azioni:,.2f}
+- Commissioni Directa: €{totale_comm:.2f}
+- **Totale: €{totale_costo:,.2f}**
+
+**2️⃣ AZIONI TOTALI = {totale_azioni}**
+Hai accumulato {totale_azioni} azioni sommando le quantità di ogni tranche.
+
+**3️⃣ PMC = €{pmc_value:.3f}** *(Prezzo Medio di Carico)*
+È il prezzo "medio ponderato" a cui hai comprato. Formula:
+```
+PMC = Costo Totale ÷ Azioni Totali
+    = €{totale_costo:,.2f} ÷ {totale_azioni}
+    = €{pmc_value:.3f}
+```
+È il tuo *vero* prezzo di acquisto, commissioni incluse.
+
+**4️⃣ Prezzo finale di mercato = €{prezzo_finale:.3f}**
+Dopo tutti i crolli impostati, il titolo vale €{prezzo_finale:.3f}.
+
+**5️⃣ VALORE ATTUALE = €{valore_finale:,.2f}**
+Quanto valgono ora le tue azioni se le vendessi al prezzo di mercato:
+```
+Valore = Azioni × Prezzo finale
+       = {totale_azioni} × €{prezzo_finale:.3f}
+       = €{valore_finale:,.2f}
+```
+
+**6️⃣ P/L = {pl_sign}€{perdita_eur:.2f} ({perdita_pct:+.2f}%)** {pl_emoji}
+Profit/Loss = quanto stai *guadagnando o perdendo* in questo momento:
+```
+P/L = Valore attuale − Investito
+    = €{valore_finale:,.2f} − €{totale_costo:,.2f}
+    = {pl_sign}€{perdita_eur:.2f}
+```
+Nel tuo caso: una **{pl_sign_txt} virtuale di {pl_sign}€{perdita_eur:.2f}**
+(= {perdita_pct:+.2f}% sul capitale investito).
+
+**7️⃣ BREAK-EVEN = +{break_even_pct:.2f}%**
+È di quanto deve risalire il prezzo per *tornare in pari*:
+```
+Break-even = (PMC ÷ Prezzo finale − 1) × 100
+           = (€{pmc_value:.3f} ÷ €{prezzo_finale:.3f} − 1) × 100
+           = +{break_even_pct:.2f}%
+```
+Cioè dal prezzo attuale di €{prezzo_finale:.3f}, il titolo deve salire del
+**{break_even_pct:.2f}%** per riportarti a profitto zero.
+
+---
+
+### 💡 Perché questo è importante
+
+Senza Median Strategy (cioè comprando tutto a €{prezzo_iniziale:.2f} il giorno 1),
+il tuo PMC sarebbe **€{prezzo_iniziale:.3f}** e il break-even necessario
+sarebbe **+{((prezzo_iniziale / prezzo_finale - 1) * 100):.2f}%**.
+
+Con la Median Strategy il break-even è sceso a **+{break_even_pct:.2f}%**
+— *risparmio di {((prezzo_iniziale / prezzo_finale - 1) * 100) - break_even_pct:.2f}
+punti percentuali* di recupero necessario.
+
+È questa la matematica che lavora per te.
+""".replace("{:,}".format(budget), f"{budget:,}".replace(",", ".")))
+
+
+# ============================================================
 # PIANO TRANCHE
 # ============================================================
 st.markdown('<div class="section-title">🎯 Piano Tranche</div>', unsafe_allow_html=True)
@@ -771,12 +876,141 @@ ticker_clean = ticker_label.strip().upper() if ticker_label.strip() else "TITOLO
 timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
 nome_sim = f"{ticker_clean}_{budget}_{timestamp}"
 
+
+def genera_png_matplotlib():
+    """
+    Genera PNG via matplotlib — robusto su Streamlit Cloud (zero deps di sistema).
+    Output 1080×1350 (formato Instagram story-friendly).
+    """
+    import matplotlib.pyplot as plt
+    import matplotlib.patches as mpatches
+    from matplotlib.patches import FancyBboxPatch
+    import io
+
+    plt.rcParams.update({
+        'font.family': 'DejaVu Sans',
+        'font.weight': 'bold',
+    })
+
+    fig, (ax_head, ax_chart, ax_stats) = plt.subplots(
+        3, 1, figsize=(10.8, 13.5),
+        gridspec_kw={'height_ratios': [1.2, 4.5, 2.2]},
+        facecolor=COL_BG,
+    )
+
+    # ---- HEADER ----
+    ax_head.set_facecolor(COL_BG)
+    ax_head.axis('off')
+    ax_head.text(0.5, 0.75, "MEDIAN STRATEGY DIRECTA",
+                 ha='center', va='center', fontsize=28, fontweight='bold',
+                 color=COL_PROFIT, transform=ax_head.transAxes)
+    ax_head.text(0.5, 0.35, f"{ticker_clean} · Budget {budget:,}€ · {n_tranche_choice} Tranche".replace(",", "."),
+                 ha='center', va='center', fontsize=16, fontweight='bold',
+                 color=COL_TEXT_LABEL, transform=ax_head.transAxes)
+    ax_head.text(0.5, 0.08, datetime.now().strftime("%d/%m/%Y · %H:%M"),
+                 ha='center', va='center', fontsize=11,
+                 color=COL_TEXT_DIM, transform=ax_head.transAxes)
+
+    # ---- CHART ----
+    ax_chart.set_facecolor(COL_CARD)
+
+    # Linea prezzo
+    ax_chart.plot(giorni, prezzi_serie, 'o-', color=COL_RISK, linewidth=3.5,
+                  markersize=12, markeredgewidth=2.5, markeredgecolor=COL_BG,
+                  label='Prezzo', zorder=3)
+    # Linea PMC
+    pmc_clean = [p if p else None for p in pmc_serie]
+    valid_idx = [i for i, p in enumerate(pmc_clean) if p is not None]
+    valid_x = [giorni[i] for i in valid_idx]
+    valid_y = [pmc_clean[i] for i in valid_idx]
+    ax_chart.plot(valid_x, valid_y, 'D--', color=COL_PROFIT, linewidth=3.5,
+                  markersize=12, markeredgewidth=2.5, markeredgecolor=COL_BG,
+                  label='PMC', zorder=4)
+
+    # Buy zones
+    for zone, label, color in [
+        (buy_zones["p1sigma"], "-1σ", COL_ACCENT),
+        (buy_zones["p2sigma"], "-2σ", COL_WARN),
+        (buy_zones["p3sigma"], "-3σ", COL_RISK),
+    ]:
+        ax_chart.axhline(y=zone, linestyle='--', color=color, linewidth=1.8, alpha=0.6)
+        ax_chart.text(max(giorni) + 0.15, zone, f" {label}  €{zone:.2f}",
+                      color=color, fontsize=11, fontweight='bold', va='center')
+
+    # Marker tranche
+    for a in risultato["acquisti"]:
+        ax_chart.scatter(a["giorno"], a["prezzo"], s=400, c=COL_ACCENT,
+                         edgecolors=COL_BG, linewidths=3, zorder=5)
+        ax_chart.annotate(f'T{a["tranche_num"]}',
+                          (a["giorno"], a["prezzo"]),
+                          textcoords="offset points", xytext=(0, 22),
+                          ha='center', fontsize=13, fontweight='bold',
+                          color=COL_TEXT, zorder=6)
+
+    ax_chart.set_xlabel('GIORNO', color=COL_TEXT_LABEL, fontsize=12, fontweight='bold', labelpad=10)
+    ax_chart.set_ylabel('PREZZO (€)', color=COL_TEXT_LABEL, fontsize=12, fontweight='bold', labelpad=10)
+    ax_chart.tick_params(colors=COL_TEXT, labelsize=11)
+    ax_chart.spines['bottom'].set_color(COL_BORDER)
+    ax_chart.spines['top'].set_color(COL_BORDER)
+    ax_chart.spines['left'].set_color(COL_BORDER)
+    ax_chart.spines['right'].set_color(COL_BORDER)
+    ax_chart.grid(True, color=COL_BORDER, alpha=0.4, linestyle='-', linewidth=0.5)
+    ax_chart.set_xticks(giorni)
+    ax_chart.legend(loc='upper right', facecolor=COL_CARD, edgecolor=COL_BORDER,
+                    labelcolor=COL_TEXT, fontsize=12, framealpha=1)
+
+    # ---- STATS GRID ----
+    ax_stats.set_facecolor(COL_BG)
+    ax_stats.axis('off')
+
+    pl_sign = '+' if perdita_eur >= 0 else ''
+    pl_color = COL_PROFIT if perdita_eur >= 0 else COL_RISK
+    be_color = COL_PROFIT if break_even_pct < 10 else (COL_WARN if break_even_pct < 20 else COL_RISK)
+
+    metrics = [
+        ("PMC",       f"€{pmc_value:.3f}",                         COL_ACCENT),
+        ("BREAK-EVEN", f"+{break_even_pct:.2f}%",                  be_color),
+        ("INVESTITO", f"€{pmc_finale.get('costo_totale', 0):,.0f}".replace(",", "."), COL_TEXT),
+        ("P/L",       f"{pl_sign}€{perdita_eur:.2f}",              pl_color),
+        ("AZIONI",    f"{pmc_finale.get('azioni_totali', 0)}",     COL_TEXT),
+        ("COMM. TOT", f"€{pmc_finale.get('commissioni_totali', 0):.2f}", COL_TEXT_DIM),
+    ]
+    n_cols = 3
+    for i, (label, value, color) in enumerate(metrics):
+        row = i // n_cols
+        col = i % n_cols
+        x = 0.04 + col * 0.32
+        y = 0.78 - row * 0.42
+        w = 0.28
+        h = 0.36
+
+        box = FancyBboxPatch((x, y - h), w, h,
+                             boxstyle="round,pad=0.01,rounding_size=0.02",
+                             linewidth=1.5, edgecolor=COL_BORDER,
+                             facecolor=COL_CARD, transform=ax_stats.transAxes)
+        ax_stats.add_patch(box)
+        ax_stats.text(x + w/2, y - 0.08, label,
+                      ha='center', va='top', fontsize=10, fontweight='bold',
+                      color=COL_TEXT_LABEL, transform=ax_stats.transAxes)
+        ax_stats.text(x + w/2, y - h/2 - 0.02, value,
+                      ha='center', va='center', fontsize=18, fontweight='bold',
+                      color=color, transform=ax_stats.transAxes)
+
+    plt.tight_layout()
+    plt.subplots_adjust(top=0.97, bottom=0.03, left=0.06, right=0.94, hspace=0.25)
+
+    buf = io.BytesIO()
+    fig.savefig(buf, format='png', facecolor=COL_BG, dpi=150, bbox_inches='tight')
+    plt.close(fig)
+    buf.seek(0)
+    return buf.getvalue()
+
+
 col_exp1, col_exp2 = st.columns(2)
 
 with col_exp1:
     try:
-        fig_export = build_chart(for_export=True)
-        png_bytes = fig_export.to_image(format="png", width=1080, height=1080, scale=2)
+        png_bytes = genera_png_matplotlib()
         st.download_button(
             label="📸 Scarica PNG",
             data=png_bytes,
@@ -784,8 +1018,8 @@ with col_exp1:
             mime="image/png",
             use_container_width=True,
         )
-    except Exception:
-        st.warning("⚠ Export PNG richiede `kaleido` (già incluso in requirements.txt)")
+    except Exception as e:
+        st.error(f"Errore export PNG: {e}")
 
 with col_exp2:
     if st.button("💾 Salva in archivio", use_container_width=True):
@@ -810,6 +1044,8 @@ with col_exp2:
         }
         st.session_state.archivio.append(sim_data)
         st.success(f"✓ Salvata: {nome_sim}")
+
+st.caption("💡 *Su smartphone: tocca \"Scarica PNG\", poi nella schermata di download tocca \"Salva immagine\" per portarla in Galleria.*")
 
 
 # ============================================================
