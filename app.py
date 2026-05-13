@@ -401,15 +401,38 @@ def calcola_pmc(acquisti: list) -> dict:
     }
 
 
-def simula_stress_test(tranches_valide: list, prezzo_iniziale: float, crolli: list):
+def simula_stress_test(tranches_valide: list, prezzo_iniziale: float, crolli: list,
+                        azioni_override: list = None):
+    """
+    Esegue stress test: ad ogni step di crollo esegue la tranche corrispondente.
+
+    Se azioni_override è fornito (lista di int allineata a tranches_valide),
+    per ogni tranche con override > 0 usa quel valore invece del calcolo automatico.
+    La commissione viene comunque ricalcolata sul controvalore effettivo (n_azioni × prezzo).
+    """
     prezzi = [prezzo_iniziale]
     acquisti = []
     pmc_history = []
 
+    def get_override(idx):
+        """Ritorna l'override se presente e > 0, altrimenti None."""
+        if azioni_override is None:
+            return None
+        if idx >= len(azioni_override):
+            return None
+        return azioni_override[idx] if azioni_override[idx] > 0 else None
+
     if len(tranches_valide) > 0:
         t = tranches_valide[0]
-        comm = commissione_directa(t["capitale_lordo"])
-        n_az = int((t["capitale_lordo"] - comm) / prezzo_iniziale)
+        override_n = get_override(0)
+        if override_n is not None:
+            # USO override: ricalcolo commissione sul controvalore reale
+            n_az = override_n
+            controvalore = n_az * prezzo_iniziale
+            comm = commissione_directa(controvalore)
+        else:
+            comm = commissione_directa(t["capitale_lordo"])
+            n_az = int((t["capitale_lordo"] - comm) / prezzo_iniziale)
         if n_az > 0:
             acquisti.append({
                 "giorno": 0,
@@ -418,6 +441,7 @@ def simula_stress_test(tranches_valide: list, prezzo_iniziale: float, crolli: li
                 "commissione": comm,
                 "tranche_num": t["num"],
                 "capitale": t["capitale_lordo"],
+                "override": override_n is not None,
             })
     pmc_history.append(calcola_pmc(acquisti))
 
@@ -428,8 +452,14 @@ def simula_stress_test(tranches_valide: list, prezzo_iniziale: float, crolli: li
 
         if (i + 1) < len(tranches_valide):
             t = tranches_valide[i + 1]
-            comm = commissione_directa(t["capitale_lordo"])
-            n_az = int((t["capitale_lordo"] - comm) / prezzo_corrente)
+            override_n = get_override(i + 1)
+            if override_n is not None:
+                n_az = override_n
+                controvalore = n_az * prezzo_corrente
+                comm = commissione_directa(controvalore)
+            else:
+                comm = commissione_directa(t["capitale_lordo"])
+                n_az = int((t["capitale_lordo"] - comm) / prezzo_corrente)
             if n_az > 0:
                 acquisti.append({
                     "giorno": i + 1,
@@ -438,6 +468,7 @@ def simula_stress_test(tranches_valide: list, prezzo_iniziale: float, crolli: li
                     "commissione": comm,
                     "tranche_num": t["num"],
                     "capitale": t["capitale_lordo"],
+                    "override": override_n is not None,
                 })
         pmc_history.append(calcola_pmc(acquisti))
 
@@ -588,6 +619,38 @@ with st.expander("📉 **Stress Test** — Imposta lo scenario di crollo", expan
         crolli_widgets.append(cr)
 crolli = crolli_widgets
 
+# Override manuale azioni per tranche (acquisti reali da Directa)
+with st.expander("✏️ **Override manuale** — Inserisci le azioni effettivamente acquistate", expanded=False):
+    st.caption(
+        "Se hai già eseguito ordini su Directa e vuoi calcolare il PMC sui numeri reali, "
+        "inserisci qui le quantità effettive per ciascuna tranche. "
+        "Se lasci 0, l'app userà il calcolo automatico."
+    )
+    azioni_override = []
+    cols_override = st.columns(min(n_tranche_choice, 3))
+    for i in range(n_tranche_choice):
+        col = cols_override[i % len(cols_override)]
+        with col:
+            n_az = st.number_input(
+                f"T{i+1} azioni",
+                min_value=0,
+                max_value=1_000_000,
+                value=0,
+                step=1,
+                key=f"override_az_{i}",
+                help=f"Quantità reale eseguita per la Tranche {i+1}. 0 = usa calcolo automatico.",
+            )
+            azioni_override.append(n_az)
+    # Flag: l'override è attivo se almeno una tranche ha azioni > 0
+    override_attivo = any(a > 0 for a in azioni_override)
+    if override_attivo:
+        st.markdown(
+            f"<div style='color:{COL_PROFIT}; font-weight:700; font-family:JetBrains Mono;'>"
+            f"✓ Override attivo — PMC ricalcolato sui valori reali"
+            f"</div>",
+            unsafe_allow_html=True,
+        )
+
 # Sub-header dinamico sotto il titolo
 ticker_display = f" · {ticker_label.upper()}" if ticker_label else ""
 st.markdown(
@@ -606,7 +669,14 @@ tranches_raw = calcola_tranches(budget, pesi, prezzo_iniziale)
 tranches_valide = [t for t in tranches_raw if t["valido"]]
 
 crolli_usati = crolli[:max(0, len(tranches_valide) - 1)]
-risultato = simula_stress_test(tranches_valide, prezzo_iniziale, crolli_usati)
+# Mappo gli override solo sulle tranche valide (le bloccate non hanno acquisto)
+override_per_valide = []
+if 'azioni_override' in dir() or 'azioni_override' in locals():
+    idx_valide = [t["num"] - 1 for t in tranches_valide]  # indici originali delle valide
+    override_per_valide = [azioni_override[i] if i < len(azioni_override) else 0
+                           for i in idx_valide]
+risultato = simula_stress_test(tranches_valide, prezzo_iniziale, crolli_usati,
+                                azioni_override=override_per_valide if override_per_valide else None)
 buy_zones = calcola_buy_zones(prezzo_iniziale, sigma_giornaliera)
 
 pmc_finale = risultato["pmc_history"][-1] if risultato["pmc_history"] else {}
@@ -816,7 +886,10 @@ for t in tranches_raw:
     eseguito = next((a for a in risultato["acquisti"] if a["tranche_num"] == t["num"]), None)
 
     if eseguito:
-        info_exec = f"@ €{eseguito['prezzo']:.3f} · giorno {eseguito['giorno']}"
+        override_badge = ""
+        if eseguito.get("override"):
+            override_badge = f" <span style='background:{COL_ACCENT}; color:{COL_BG}; padding:1px 6px; border-radius:6px; font-size:0.7rem; font-weight:800;'>MANUAL</span>"
+        info_exec = f"@ €{eseguito['prezzo']:.3f} · giorno {eseguito['giorno']}{override_badge}"
         n_az_str = f"{eseguito['n_azioni']} az."
     else:
         info_exec = "in attesa"
@@ -1107,7 +1180,8 @@ def genera_png_matplotlib():
         # Prezzo (solo se eseguita)
         if eseguito:
             prezzo_str = f"€{eseguito['prezzo']:.3f}"
-            azioni_str = f"{eseguito['n_azioni']}"
+            # Aggiungo asterisco se override manuale
+            azioni_str = f"{eseguito['n_azioni']}*" if eseguito.get("override") else f"{eseguito['n_azioni']}"
             azioni_color = t_color
             prezzo_color = COL_TEXT
         elif not t["valido"]:
@@ -1134,6 +1208,14 @@ def genera_png_matplotlib():
         ax_tranche.text(col_x[5], y, f"€{t['commissione']:.2f}",
                         ha='left', va='center', fontsize=13,
                         color=COL_TEXT_DIM, transform=ax_tranche.transAxes)
+
+    # Legenda asterisco se ci sono override
+    has_override = any(a.get("override") for a in risultato["acquisti"])
+    if has_override:
+        ax_tranche.text(0.5, 0.04,
+                        "* = quantità inserita manualmente",
+                        ha='center', va='center', fontsize=10, fontstyle='italic',
+                        color=COL_ACCENT, transform=ax_tranche.transAxes)
 
     # ---- STATS GRID ----
     ax_stats.set_facecolor(COL_BG)
