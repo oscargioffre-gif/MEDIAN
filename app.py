@@ -44,8 +44,40 @@ COL_TEXT = "#FFFFFF"         # bianco puro
 COL_TEXT_DIM = "#B8C5D6"     # grigio chiaro luminoso
 COL_TEXT_LABEL = "#7FD3FF"   # ciano chiaro per label
 
+PESI_2 = [0.35, 0.65]
 PESI_3 = [0.20, 0.30, 0.50]
 PESI_4 = [0.10, 0.20, 0.30, 0.40]
+PESI_5 = [0.08, 0.15, 0.22, 0.25, 0.30]
+
+PROFILI_TRANCHE = {
+    5: PESI_5,
+    4: PESI_4,
+    3: PESI_3,
+    2: PESI_2,
+}
+
+
+def seleziona_n_tranche_ottimale(budget_totale: float) -> tuple:
+    """
+    Sceglie il MASSIMO numero di tranche (5→4→3→2) per cui TUTTE le tranche
+    rispettano la soglia di efficienza commissionale (incidenza ≤ 0.20%).
+
+    Ritorna: (n_tranche, pesi, motivo)
+    """
+    for n in [5, 4, 3, 2]:
+        pesi = PROFILI_TRANCHE[n]
+        # Verifica che la tranche più piccola (peso minimo) rispetti la soglia
+        peso_min = min(pesi)
+        cap_min = budget_totale * peso_min
+        comm_min = max(cap_min * COMMISSIONE_PROPORZIONALE, COMMISSIONE_MIN)
+        incidenza = comm_min / cap_min if cap_min > 0 else 1
+
+        if incidenza <= SOGLIA_EFFICIENZA:
+            motivo = f"{n} tranche selezionate (efficienza max compatibile con soglia 0.20%)"
+            return n, pesi, motivo
+
+    # Fallback: anche 2 tranche non basta — uso 2 ma segnala il problema
+    return 2, PESI_2, "⚠ Capitale insufficiente per soglia 0.20% — 2 tranche con avviso"
 
 st.set_page_config(
     page_title="Median Strategy Directa",
@@ -88,14 +120,15 @@ section[data-testid="stSidebar"] * {{
 .main-title {{
     font-family: 'Inter', sans-serif;
     font-weight: 900;
-    font-size: 2.4rem;
-    line-height: 1;
+    font-size: clamp(1.4rem, 6.5vw, 2.4rem);
+    line-height: 0.95;
     background: linear-gradient(135deg, {COL_PROFIT} 0%, {COL_ACCENT} 100%);
     -webkit-background-clip: text;
     -webkit-text-fill-color: transparent;
     letter-spacing: -1.5px;
     margin-bottom: 0.3rem;
     text-shadow: 0 0 40px rgba(0, 255, 148, 0.3);
+    word-break: keep-all;
 }}
 .main-sub {{
     font-family: 'JetBrains Mono', monospace;
@@ -283,7 +316,6 @@ section[data-testid="stSidebar"] * {{
 }}
 
 @media (max-width: 640px) {{
-    .main-title {{ font-size: 1.9rem; }}
     .main-sub {{ font-size: 0.7rem; }}
     .metric-value {{ font-size: 1.55rem; }}
     .metric-label {{ font-size: 0.65rem; }}
@@ -455,7 +487,7 @@ with st.sidebar:
 # ============================================================
 # HEADER
 # ============================================================
-st.markdown('<div class="main-title">Median Strategy Directa</div>', unsafe_allow_html=True)
+st.markdown('<div class="main-title">Median Strategy<br>Directa</div>', unsafe_allow_html=True)
 
 
 # ============================================================
@@ -463,54 +495,85 @@ st.markdown('<div class="main-title">Median Strategy Directa</div>', unsafe_allo
 # ============================================================
 st.markdown('<div class="section-title">⚙️ Parametri</div>', unsafe_allow_html=True)
 
-budget = st.select_slider(
-    "Budget totale (€)",
-    options=[5000, 6000, 7000, 8000, 9000, 10000],
+budget = st.number_input(
+    "💰 Capitale disponibile (€) — senza leva",
+    min_value=500,
+    max_value=1000000,
     value=10000,
-    format_func=lambda x: f"{x:,}€".replace(",", "."),
+    step=500,
+    format="%d",
+    help="Inserisci il capitale che vuoi investire. L'app deciderà automaticamente il numero ottimale di tranche per rispettare la soglia di efficienza commissionale Directa (0.20%).",
 )
+
+# Selezione automatica numero tranche
+n_tranche_choice, pesi_auto, motivo_tranche = seleziona_n_tranche_ottimale(budget)
+
+# Info box sulla scelta automatica
+pesi_str_display = " / ".join(f"{int(p*100)}%" for p in pesi_auto)
+st.markdown(f"""
+<div style="background: linear-gradient(135deg, {COL_CARD} 0%, {COL_CARD_HI} 100%);
+            border-left: 4px solid {COL_PROFIT};
+            border-radius: 10px; padding: 0.9rem 1.1rem; margin: 0.5rem 0 1rem 0;
+            font-family: 'JetBrains Mono', monospace;">
+    <div style="color: {COL_TEXT_LABEL}; font-size: 0.72rem; font-weight: 700;
+                letter-spacing: 1.2px; text-transform: uppercase; margin-bottom: 0.3rem;">
+        🤖 Piano automatico ottimizzato
+    </div>
+    <div style="color: {COL_TEXT}; font-size: 1rem; font-weight: 700;">
+        {n_tranche_choice} tranche · pesi {pesi_str_display}
+    </div>
+    <div style="color: {COL_TEXT_DIM}; font-size: 0.78rem; margin-top: 0.4rem; line-height: 1.4;">
+        Selezione basata sull'efficienza commissionale Directa.
+        Tranche minima: <strong style="color:{COL_PROFIT};">€{budget * min(pesi_auto):,.0f}</strong>.
+    </div>
+</div>
+""".replace(",", "."), unsafe_allow_html=True)
 
 col_p1, col_p2 = st.columns(2)
 with col_p1:
-    n_tranche_choice = st.radio(
-        "Numero tranche",
-        options=[3, 4],
-        index=1 if budget >= 7500 else 0,
-        horizontal=True,
-        help="3 tranche per ingressi più rapidi, 4 per maggior smoothing del PMC",
-    )
-with col_p2:
-    sigma_giornaliera = st.slider(
-        "Volatilità σ (%)",
-        min_value=1.0,
-        max_value=10.0,
-        value=4.0,
-        step=0.5,
-        help="Biotech small-cap: 4-7% · Mid-cap: 2-3% · Blue chip: 1-2%",
-    )
-
-col_p3, col_p4 = st.columns(2)
-with col_p3:
     ticker_label = st.text_input(
-        "Ticker",
+        "🏷️ Ticker",
         value="",
         placeholder="es. SRPT, ENI.MI",
     )
-with col_p4:
+with col_p2:
     prezzo_iniziale = st.number_input(
-        "Prezzo iniziale (€)",
+        "💲 Prezzo di acquisto T1 (€)",
         min_value=0.01,
         max_value=10000.0,
         value=25.00,
         step=0.10,
         format="%.2f",
+        help="Prezzo PURO di mercato senza commissioni. Le commissioni Directa (1.90€ ogni 1000€, min 1.50€) le calcola l'app automaticamente per ogni tranche.",
     )
+
+# Badge esplicativo prezzo pulito
+st.markdown(f"""
+<div style="background: rgba(0, 212, 255, 0.08);
+            border: 1px solid {COL_ACCENT};
+            border-radius: 8px; padding: 0.6rem 0.9rem; margin: 0.3rem 0 1rem 0;
+            font-family: 'Inter', sans-serif; font-size: 0.82rem;
+            color: {COL_TEXT};">
+    💡 <strong style="color:{COL_ACCENT};">Nota</strong>:
+    inserisci il prezzo <em>puro di mercato</em> (senza commissioni).
+    L'app calcola PMC, azioni e commissioni Directa per ogni tranche in automatico.
+</div>
+""", unsafe_allow_html=True)
+
+sigma_giornaliera = st.slider(
+    "📊 Volatilità σ giornaliera del titolo (%)",
+    min_value=1.0,
+    max_value=10.0,
+    value=4.0,
+    step=0.5,
+    help="Biotech small-cap: 4-7% · Mid-cap: 2-3% · Blue chip: 1-2%",
+)
 
 # Stress Test in un expander pieghevole nel body principale
 st.markdown("")  # spacer
 with st.expander("📉 **Stress Test** — Imposta lo scenario di crollo", expanded=True):
     st.caption("Crollo consecutivo per giorno (in % vs giorno precedente)")
-    default_crolli = [-3.0, -5.0, -10.0, -7.0]
+    default_crolli = [-3.0, -5.0, -10.0, -7.0, -4.0]
     crolli_widgets = []
     for i in range(n_tranche_choice - 1):
         cr = st.slider(
@@ -528,7 +591,7 @@ crolli = crolli_widgets
 # Sub-header dinamico sotto il titolo
 ticker_display = f" · {ticker_label.upper()}" if ticker_label else ""
 st.markdown(
-    f'<div class="main-sub" style="margin-top:1rem;">Budget {budget:,}€ · {n_tranche_choice} tranche{ticker_display}</div>'.replace(",", "."),
+    f'<div class="main-sub" style="margin-top:1rem;">Capitale {budget:,}€ · {n_tranche_choice} tranche{ticker_display}</div>'.replace(",", "."),
     unsafe_allow_html=True,
 )
 
@@ -538,7 +601,7 @@ st.markdown(
 # ============================================================
 ticker_clean = ticker_label.strip().upper() if ticker_label.strip() else "TITOLO"
 
-pesi = PESI_3 if n_tranche_choice == 3 else PESI_4
+pesi = pesi_auto  # pesi selezionati automaticamente in base al capitale
 tranches_raw = calcola_tranches(budget, pesi, prezzo_iniziale)
 tranches_valide = [t for t in tranches_raw if t["valido"]]
 
